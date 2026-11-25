@@ -1,7 +1,7 @@
 # Maintainer: DaveJV
 pkgname=proton-cachyos-nightly-git
 _name=proton-cachyos-nightly
-pkgver=0.1.0.r3.gcf188d8
+pkgver=0.4.0.r9.gbf9aa7f
 pkgrel=1
 pkgdesc="PySide6 app to install and update proton-cachyos nightly builds for Steam and Faugus"
 arch=('any')
