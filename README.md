@@ -110,7 +110,7 @@ It refuses while a process is running from the install folder.
 ## GitHub rate limit
 
 Unauthenticated GitHub API calls are limited to 60 per hour. A refresh uses
-about 3 to 5 calls. Responses are cached with ETags, and `304 Not Modified`
+about 5 to 7 calls. Responses are cached with ETags, and `304 Not Modified`
 replies don't count against the limit. When a token is available (see
 above), the app uses it for every API call, which raises the limit to
 5000 per hour.
