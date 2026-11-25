@@ -77,7 +77,7 @@ class UpdaterError(Exception):
 class NightlyRebuilding(UpdaterError):
     """The nightly release (or the wanted asset) is temporarily missing."""
 
-    def __init__(self, msg: str = "Nightly is being rebuilt, try again in a few minutes."):
+    def __init__(self, msg: str = "Nightly is being rebuilt."):
         super().__init__(msg)
 
 
@@ -445,8 +445,9 @@ class GitHub:
             )
         # requests drops the Authorization header on the cross-host redirect
         # to the blob store, as required.
-        r = self.s.get(asset.url, stream=True, timeout=timeout,
-                       headers={"Accept": "application/octet-stream"})
+        # The artifact zip endpoint answers 415 to Accept: octet-stream.
+        headers = {} if asset.zipped else {"Accept": "application/octet-stream"}
+        r = self.s.get(asset.url, stream=True, timeout=timeout, headers=headers)
         if r.status_code == 404 and not asset.zipped:
             r.close()
             raise NightlyRebuilding()
@@ -769,7 +770,7 @@ def install(
             if failures == release_retries and gh.token:
                 status("Release assets still missing, falling back to Actions artifacts…")
                 continue
-            status(f"{str(e).removesuffix(' try again in a few minutes.')} Retrying in {int(retry_delay)} s…")
+            status(f"{e} Retrying in {int(retry_delay)} s…")
             _sleep(gh.cancel, retry_delay)
         finally:
             _cleanup_temp()

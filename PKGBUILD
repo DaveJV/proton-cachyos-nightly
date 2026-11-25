@@ -9,7 +9,8 @@ url="https://github.com/DaveJV/proton-cachyos-nightly"
 license=('MIT')
 depends=('python' 'pyside6' 'python-requests' 'tar' 'xz' 'procps-ng')
 makedepends=('git')
-optdepends=('steam: to use the installed compatibility tool'
+optdepends=('github-cli: Actions artifact fallback and artifact-only variants'
+            'steam: to use the installed compatibility tool'
             'faugus-launcher: to use the installed compatibility tool')
 provides=("$_name")
 conflicts=("$_name")

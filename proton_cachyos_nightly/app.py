@@ -461,7 +461,7 @@ class MainWindow(QMainWindow):
         self.state = s
         self.idle_bar()
         self.render()
-        if s.rebuilding:
+        if s.rebuilding and not s.pick(self.cur_variant()):
             self.msg.setText("⚠ Nightly is being rebuilt. Checking again in 2 minutes.")
             self.retry_timer.start(REBUILD_RETRY_MS)
         else:
