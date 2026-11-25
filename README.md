@@ -10,10 +10,21 @@ for Steam and [Faugus Launcher](https://github.com/Faugus/faugus-launcher).
   `x86_64_v3-llvm`, `x86_64_v3`, `x86_64` and `arm64`. With GitHub auth you
   also get the variants that are only built as Actions artifacts:
   `x86_64_v4` (GCC), `x86_64-llvm`, `x86_64-wow64` and `x86_64-llvm-wow64`.
-  The default is `x86_64_v3` regardless of CPU, or `arm64` on ARM machines.
-  `x86_64_v4`, `x86_64_v3-llvm` and `x86_64_v4-llvm` are labelled
-  **experimental**: CachyOS marks the v4 builds as largely untested, and they
-  may refuse to work.
+- Picks a default variant and filters the list using the `flags` line from
+  `/proc/cpuinfo`:
+  - **Default:** `x86_64_v3` (GCC) if the CPU has `avx2`, `bmi1`, `bmi2`,
+    `fma`, `movbe`, `f16c` and `lzcnt` (reported as `abm`). Otherwise plain
+    `x86_64`. The default is never a v4 or LLVM build.
+  - **v4 variants** appear only if `avx512f`, `avx512bw`, `avx512cd`,
+    `avx512dq` and `avx512vl` are all present. They are labelled
+    **experimental**: CachyOS marks v4 as largely untested, and some Intel
+    12th gen and newer chips report AVX-512 but cannot run it.
+    `x86_64_v3-llvm` is also labelled experimental.
+  - **v3 variants** are hidden on CPUs that lack the v3 flags.
+  - **Non-x86 machines** are offered only the `arm64` build.
+  - Hidden variants are summarised next to the dropdown ("ⓘ N variants
+    hidden"), with a tooltip that lists the missing flags. Installing a
+    variant the CPU can't run is refused.
 - Falls back to **Snapshot workflow artifacts** when the nightly release
   disappears (see below). The UI shows which source is in use:
   **Release** or **Actions artifact**.
@@ -120,7 +131,8 @@ above), the app uses it for every API call, which raises the limit to
 ## Testing without touching Steam
 
 `PCN_COMPAT_DIR` and `PCN_DATA_DIR` override the compatibilitytools.d folder
-and the data folder:
+and the data folder. `PCN_CPU_FLAGS` (a space-separated flag list) and
+`PCN_MACHINE` (e.g. `aarch64`) override CPU detection:
 
 ```sh
 PCN_COMPAT_DIR=/tmp/pcn/compat PCN_DATA_DIR=/tmp/pcn/data python -m proton_cachyos_nightly

@@ -113,26 +113,113 @@ def save_config(cfg: dict) -> None:
 
 
 # --------------------------------------------------------------------------
-# Variant defaults
+# CPU detection and variant defaults
 # --------------------------------------------------------------------------
 
-DEFAULT_VARIANT = "x86_64_v3"
+V3_FLAGS = ("avx2", "bmi1", "bmi2", "fma", "movbe", "f16c")  # plus lzcnt, see below
+V4_FLAGS = ("avx512f", "avx512bw", "avx512cd", "avx512dq", "avx512vl")
 
-# CachyOS marks the v4 builds as largely untested; the v3 LLVM build is
-# grouped with them here as well.
-EXPERIMENTAL_VARIANTS = {"x86_64_v4", "x86_64_v3-llvm", "x86_64_v4-llvm"}
 EXPERIMENTAL_NOTE = (
     "Experimental: CachyOS marks the v4 builds as largely untested, "
     "and this build may refuse to work."
 )
+AVX512_WARNING = (
+    "Some Intel 12th gen and newer chips report AVX-512 but cannot run it. "
+    "If games crash or Proton won't start, switch to x86_64_v3."
+)
 
 
-def default_variant() -> str:
-    """x86_64_v3 regardless of CPU features (arm64 on ARM machines, where
-    no x86 build can run)."""
-    if platform.machine() in ("aarch64", "arm64"):
+@dataclass(frozen=True)
+class CpuInfo:
+    machine: str
+    flags: frozenset[str]
+
+    @property
+    def is_x86(self) -> bool:
+        return self.machine in ("x86_64", "amd64", "i686", "i386")
+
+    @property
+    def missing_v3(self) -> list[str]:
+        missing = [f for f in V3_FLAGS if f not in self.flags]
+        # /proc/cpuinfo reports LZCNT as "abm" on both Intel and AMD.
+        if not ({"abm", "lzcnt"} & self.flags):
+            missing.append("lzcnt (abm)")
+        return missing
+
+    @property
+    def missing_v4(self) -> list[str]:
+        return [f for f in V4_FLAGS if f not in self.flags]
+
+    @property
+    def has_v3(self) -> bool:
+        return self.is_x86 and not self.missing_v3
+
+    @property
+    def has_v4(self) -> bool:
+        return self.has_v3 and not self.missing_v4
+
+
+def _read_cpu() -> CpuInfo:
+    # PCN_MACHINE / PCN_CPU_FLAGS override detection for testing.
+    machine = os.environ.get("PCN_MACHINE") or platform.machine()
+    env_flags = os.environ.get("PCN_CPU_FLAGS")
+    if env_flags is not None:
+        return CpuInfo(machine, frozenset(env_flags.split()))
+    flags: frozenset[str] = frozenset()
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("flags"):
+                    flags = frozenset(line.split(":", 1)[1].split())
+                    break
+    except OSError:
+        pass
+    return CpuInfo(machine, flags)
+
+
+CPU = _read_cpu()
+
+
+def variant_level(variant: str) -> str:
+    if variant == "arm64":
         return "arm64"
-    return DEFAULT_VARIANT
+    if variant.startswith("x86_64_v4"):
+        return "v4"
+    if variant.startswith("x86_64_v3"):
+        return "v3"
+    return "x86_64"
+
+
+def cpu_hidden_reason(variant: str, cpu: CpuInfo = CPU) -> str | None:
+    """Why this CPU can't use the variant, or None if it can."""
+    level = variant_level(variant)
+    if not cpu.is_x86:
+        if level == "arm64":
+            return None
+        return f"This machine is {cpu.machine}, not x86-64, so only the arm64 build can run."
+    if level == "v4" and not cpu.has_v4:
+        missing = cpu.missing_v3 + cpu.missing_v4
+        return "Needs x86-64-v4 (AVX-512); this CPU lacks " + ", ".join(missing) + "."
+    if level == "v3" and not cpu.has_v3:
+        return "Needs x86-64-v3; this CPU lacks " + ", ".join(cpu.missing_v3) + "."
+    return None
+
+
+def experimental_note(variant: str) -> str | None:
+    level = variant_level(variant)
+    if level == "v4":
+        return f"{EXPERIMENTAL_NOTE}\n\n{AVX512_WARNING}"
+    if variant == "x86_64_v3-llvm":
+        return EXPERIMENTAL_NOTE
+    return None
+
+
+def default_variant(cpu: CpuInfo = CPU) -> str:
+    """x86_64_v3 (GCC) on x86-64-v3 CPUs, otherwise plain x86_64; arm64 on
+    non-x86 machines. Never a v4 or LLVM build."""
+    if not cpu.is_x86:
+        return "arm64"
+    return "x86_64_v3" if cpu.has_v3 else "x86_64"
 
 
 # --------------------------------------------------------------------------
@@ -219,6 +306,7 @@ class Status:
     has_token: bool = False
     variants: list[str] = field(default_factory=list)  # selectable
     hidden_variants: list[str] = field(default_factory=list)  # artifact-only, no auth
+    cpu_hidden: dict[str, str] = field(default_factory=dict)  # variant -> reason
     snapshot_error: str | None = None
 
     def pick(self, variant: str) -> Build | None:
@@ -689,6 +777,13 @@ def check_status(
         variants, hidden = sort_variants(rel_vs | art_vs), []
     else:
         variants, hidden = sort_variants(rel_vs), sort_variants(artifact_only)
+    # Variants this CPU can't run are hidden regardless of source.
+    cpu_hidden = {
+        v: r for v in sort_variants(rel_vs | art_vs | set(KNOWN_VARIANTS))
+        if (r := cpu_hidden_reason(v))
+    }
+    variants = [v for v in variants if v not in cpu_hidden]
+    hidden = [v for v in hidden if v not in cpu_hidden]
 
     build = pick_build(variant, nightly, snapshot, has_token, rebuilding)
     head = build.sha if build else (nightly.sha if nightly else None)
@@ -719,6 +814,7 @@ def check_status(
         has_token=has_token,
         variants=variants,
         hidden_variants=hidden,
+        cpu_hidden=cpu_hidden,
         snapshot_error=snapshot_error,
     )
 
@@ -771,6 +867,9 @@ def install(
 
 
 def _resolve_build(gh: GitHub, variant: str, status: StatusCb, fallback: bool) -> Build:
+    reason = cpu_hidden_reason(variant)
+    if reason:
+        raise UpdaterError(f"{variant} can't run on this machine. {reason}")
     status("Looking up latest nightly…")
     nightly, _ = gh.latest_nightly_and_stable()
     rb = nightly.builds.get(variant) if nightly else None

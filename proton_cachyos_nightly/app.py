@@ -10,7 +10,7 @@ import traceback
 from datetime import datetime
 
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -95,13 +95,27 @@ class MainWindow(QMainWindow):
         top.addWidget(QLabel("Variant:"))
         self.variant = QComboBox()
         self.variant.setMinimumWidth(180)
-        self._fill_variants(core.KNOWN_VARIANTS, core.RELEASE_VARIANTS)
-        self._select(self.cfg.get("variant") or core.default_variant())
+        # Created before the first fill, which updates its text.
+        self.cpu_note = QLabel()
+        # Greyed via palette, not setEnabled(False): disabled widgets show no tooltip.
+        self.cpu_note.setForegroundRole(QPalette.ColorRole.PlaceholderText)
+        self.cpu_note.setCursor(Qt.CursorShape.WhatsThisCursor)
+        initial_cpu_hidden = {
+            v: r for v in core.KNOWN_VARIANTS if (r := core.cpu_hidden_reason(v))
+        }
+        self._fill_variants(
+            [v for v in core.KNOWN_VARIANTS if v not in initial_cpu_hidden],
+            core.RELEASE_VARIANTS,
+        )
+        self._show_cpu_hidden(initial_cpu_hidden)
+        if not self._select(self.cfg.get("variant") or ""):
+            self._select(core.default_variant())
         self.variant.currentIndexChanged.connect(self.on_variant_changed)
         top.addWidget(self.variant)
         self.cpu_hint = QLabel(f"(default: {core.default_variant()})")
         self.cpu_hint.setEnabled(False)
         top.addWidget(self.cpu_hint)
+        top.addWidget(self.cpu_note)
         top.addStretch(1)
         root.addLayout(top)
         self.hidden_note = QLabel()
@@ -206,16 +220,15 @@ class MainWindow(QMainWindow):
         self.variant.clear()
         for v in variants:
             tags = []
-            if v in core.EXPERIMENTAL_VARIANTS:
+            note = core.experimental_note(v)
+            if note:
                 tags.append("experimental")
             if v not in release_variants:
                 tags.append("Actions artifact")
             label = f"{v}  ({', '.join(tags)})" if tags else v
             self.variant.addItem(label, v)
-            if v in core.EXPERIMENTAL_VARIANTS:
-                self.variant.setItemData(
-                    self.variant.count() - 1, core.EXPERIMENTAL_NOTE, Qt.ItemDataRole.ToolTipRole
-                )
+            if note:
+                self.variant.setItemData(self.variant.count() - 1, note, Qt.ItemDataRole.ToolTipRole)
         self.variant.blockSignals(False)
         if cur:
             self._select(cur)
@@ -223,9 +236,20 @@ class MainWindow(QMainWindow):
 
     def _update_variant_tooltip(self):
         # Closed combo shows the selected item's tooltip too.
-        self.variant.setToolTip(
-            core.EXPERIMENTAL_NOTE if self.cur_variant() in core.EXPERIMENTAL_VARIANTS else ""
-        )
+        self.variant.setToolTip(core.experimental_note(self.cur_variant()) or "")
+
+    def _show_cpu_hidden(self, hidden: dict[str, str]):
+        """Small 'ⓘ N hidden' label whose tooltip says why."""
+        if not hidden:
+            self.cpu_note.hide()
+            return
+        n = len(hidden)
+        self.cpu_note.setText(f"ⓘ {n} variant{'s' * (n != 1)} hidden for this CPU")
+        by_reason: dict[str, list[str]] = {}
+        for v, r in hidden.items():
+            by_reason.setdefault(r, []).append(v)
+        self.cpu_note.setToolTip("\n\n".join(f"{', '.join(vs)}:\n{r}" for r, vs in by_reason.items()))
+        self.cpu_note.show()
 
     def busy(self) -> bool:
         return self.thread is not None
@@ -279,6 +303,7 @@ class MainWindow(QMainWindow):
         for target in (want, core.default_variant(), s.variants[0] if s.variants else ""):
             if self._select(target):
                 break
+        self._show_cpu_hidden(s.cpu_hidden)
         if s.hidden_variants:
             self.hidden_note.setText(
                 "<i>Hidden: " + ", ".join(s.hidden_variants) + ". These are only built as "
