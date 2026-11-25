@@ -9,6 +9,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
+import logging.handlers
 import os
 import platform
 import re
@@ -42,6 +44,25 @@ INSTALL_DIR = COMPAT_DIR / TOOL_NAME
 PREVIOUS_DIR = DATA_DIR / "previous"
 CONFIG_FILE = XDG_CONFIG / TOOL_NAME / "config.json"
 CACHE_DIR = XDG_CACHE / TOOL_NAME
+LOG_FILE = DATA_DIR / f"{TOOL_NAME}.log"
+
+log = logging.getLogger(TOOL_NAME)
+
+
+def _ensure_log_handler() -> None:
+    """Attach the rotating file handler on first use (details that must not
+    appear in the UI go here)."""
+    target = str(LOG_FILE)
+    if any(getattr(h, "baseFilename", None) == target for h in log.handlers):
+        return
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        h = logging.handlers.RotatingFileHandler(target, maxBytes=1 << 20, backupCount=2)
+    except OSError:
+        return
+    h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    log.addHandler(h)
+    log.setLevel(logging.INFO)
 
 # Display order. The Snapshot workflow builds all of these; the nightly
 # release only publishes RELEASE_VARIANTS, the rest are Actions-artifact only.
@@ -279,6 +300,14 @@ class Release:
         return commit_from_build(n) if n else None
 
 
+COMPARE_ERROR_TEXT = {
+    "github": "GitHub error",
+    "network": "network error",
+    "rate_limit": "GitHub rate limit",
+    "not_found": "commit not found on GitHub",
+}
+
+
 @dataclass
 class Compare:
     base: str
@@ -287,7 +316,14 @@ class Compare:
     behind_by: int
     commits: list[tuple[str, str]]  # (short sha, title), newest first
     html_url: str
-    error: str | None = None
+    # One of COMPARE_ERROR_TEXT's keys. Never raw exception text: that goes
+    # to the log file only.
+    error_kind: str | None = None
+    skipped: bool = False  # same commit, no API call made
+
+    @property
+    def error_text(self) -> str:
+        return COMPARE_ERROR_TEXT.get(self.error_kind or "", "GitHub error")
 
 
 @dataclass
@@ -447,25 +483,61 @@ class GitHub:
         stable = next((r for r in rels if not r.prerelease), None)
         return nightly, stable
 
+    # Pauses between attempts for transient failures (5xx, network):
+    # 1 try + len(RETRY_DELAYS) retries.
+    RETRY_DELAYS: tuple[float, ...] = (0.5, 1.0, 2.0)
+
+    def _get_json_retry(self, url: str, params: dict | None = None):
+        attempt = 0
+        while True:
+            try:
+                return self.get_json(url, params)
+            except requests.HTTPError as e:
+                status = e.response.status_code if e.response is not None else 0
+                if status < 500 or attempt >= len(self.RETRY_DELAYS):
+                    raise
+            except (requests.ConnectionError, requests.Timeout):
+                if attempt >= len(self.RETRY_DELAYS):
+                    raise
+            _ensure_log_handler()
+            log.info("retrying %s (attempt %d of %d failed)", url, attempt + 1, len(self.RETRY_DELAYS) + 1)
+            if self.cancel.wait(self.RETRY_DELAYS[attempt]):
+                raise Cancelled()
+            attempt += 1
+
     def compare(self, base: str, head: str) -> Compare:
         url = f"{API}/compare/{base}...{head}"
         per = 100
+
+        def failed(kind: str, exc: BaseException) -> Compare:
+            _ensure_log_handler()
+            log.warning("compare %s...%s failed (%s): %s", base, head, kind, url, exc_info=exc)
+            return Compare(base, head, 0, 0, [], "", error_kind=kind)
+
         try:
-            d = self.get_json(url, {"per_page": per})
+            d = self._get_json_retry(url, {"per_page": per})
             raw = list(d.get("commits", []))
             # Commits come oldest first and paginated; fetch the last page(s)
             # so the list shows the newest ones.
             total = d.get("total_commits", len(raw))
             if total > per:
                 last = -(-total // per)
-                raw = self.get_json(url, {"per_page": per, "page": last}).get("commits", [])
+                raw = self._get_json_retry(url, {"per_page": per, "page": last}).get("commits", [])
                 if len(raw) < per and last > 2:
-                    prev = self.get_json(url, {"per_page": per, "page": last - 1}).get("commits", [])
+                    prev = self._get_json_retry(url, {"per_page": per, "page": last - 1}).get("commits", [])
                     raw = (prev + raw)[-per:]
-        except FileNotFoundError:
-            return Compare(base, head, 0, 0, [], "", error=f"{base[:12]} not found upstream")
-        except (requests.RequestException, UpdaterError) as e:
-            return Compare(base, head, 0, 0, [], "", error=str(e))
+        except Cancelled:
+            raise
+        except FileNotFoundError as e:
+            return failed("not_found", e)
+        except NeedsAuth as e:
+            return failed("github", e)
+        except UpdaterError as e:  # rate limit
+            return failed("rate_limit", e)
+        except (requests.ConnectionError, requests.Timeout) as e:
+            return failed("network", e)
+        except (requests.RequestException, ValueError, KeyError, TypeError) as e:
+            return failed("github", e)
         commits = [
             (c["sha"][:8], (c["commit"]["message"].splitlines() or [""])[0])
             for c in raw
@@ -791,10 +863,9 @@ def check_status(
     installed = installed_build()
     vs_installed = vs_stable = None
     if head:
-        inst_sha = commit_from_build(installed) if installed else None
-        if inst_sha:
-            status("Comparing installed build with nightly…")
-            vs_installed = gh.compare(inst_sha, head)
+        status("Comparing installed build with nightly…")
+        vs_installed = compare_installed(gh, installed, head)
+        # Independent of the installed compare: one failing never hides the other.
         if stable:
             status("Comparing stable with nightly…")
             vs_stable = gh.compare(stable.tag, head)
@@ -817,6 +888,22 @@ def check_status(
         cpu_hidden=cpu_hidden,
         snapshot_error=snapshot_error,
     )
+
+
+def same_commit(a: str, b: str) -> bool:
+    """Short shas of possibly different lengths."""
+    n = min(len(a), len(b))
+    return n >= 7 and a[:n].lower() == b[:n].lower()
+
+
+def compare_installed(gh: GitHub, installed: str | None, head: str | None) -> Compare | None:
+    """Installed build vs nightly commit; no API call when they're the same."""
+    inst_sha = commit_from_build(installed) if installed else None
+    if not inst_sha or not head:
+        return None
+    if same_commit(inst_sha, head):
+        return Compare(inst_sha, head, 0, 0, [], "", skipped=True)
+    return gh.compare(inst_sha, head)
 
 
 def _sleep(cancel: threading.Event, seconds: float) -> None:

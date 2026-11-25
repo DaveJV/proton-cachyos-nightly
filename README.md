@@ -138,6 +138,22 @@ and the data folder. `PCN_CPU_FLAGS` (a space-separated flag list) and
 PCN_COMPAT_DIR=/tmp/pcn/compat PCN_DATA_DIR=/tmp/pcn/data python -m proton_cachyos_nightly
 ```
 
+## Tests
+
+The tests run offline. HTTP calls are mocked and every path points into a
+temp dir. They use only the standard library plus the runtime dependencies.
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+## Logs
+
+Details that are kept out of the UI, such as failed GitHub compare calls and
+retries, are written to
+`~/.local/share/proton-cachyos-nightly/proton-cachyos-nightly.log`. The log
+rotates at 1 MB and keeps 2 old files.
+
 ## Known issues
 
 - v4 and LLVM builds are experimental. `x86_64_v4-llvm` crashed wineserver on

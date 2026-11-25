@@ -142,14 +142,31 @@ class MainWindow(QMainWindow):
         self.l_source = lab()
         self.l_stable = lab()
         self.l_repo = lab()
-        self.l_worth = lab()
+        # "Worth updating?": installed line (+ Retry) above the stable line,
+        # so a failed installed compare never hides the stable comparison.
+        self.l_worth_inst = lab()
+        self.b_retry_cmp = QPushButton(QIcon.fromTheme("view-refresh"), "Retry")
+        self.b_retry_cmp.setToolTip("Check again how far your build is behind the nightly")
+        self.b_retry_cmp.clicked.connect(self.on_retry_compare)
+        self.b_retry_cmp.hide()
+        self.l_worth_stable = lab()
+        worth = QWidget()
+        wv = QVBoxLayout(worth)
+        wv.setContentsMargins(0, 0, 0, 0)
+        wv.setSpacing(2)
+        inst_row = QHBoxLayout()
+        inst_row.setContentsMargins(0, 0, 0, 0)
+        inst_row.addWidget(self.l_worth_inst, 1)
+        inst_row.addWidget(self.b_retry_cmp, 0, Qt.AlignmentFlag.AlignTop)
+        wv.addLayout(inst_row)
+        wv.addWidget(self.l_worth_stable)
         form.addRow("Installed:", self.l_installed)
         form.addRow("Previous:", self.l_previous)
         form.addRow("Latest nightly:", self.l_nightly)
         form.addRow("Source:", self.l_source)
         form.addRow("Stable (GitHub):", self.l_stable)
         form.addRow("Stable (CachyOS repo):", self.l_repo)
-        form.addRow("Worth updating?", self.l_worth)
+        form.addRow("Worth updating?", worth)
         root.addWidget(box)
 
         # Changelog
@@ -255,7 +272,7 @@ class MainWindow(QMainWindow):
         return self.thread is not None
 
     def set_busy(self, on: bool):
-        for w in (self.b_install, self.b_rollback, self.b_refresh, self.variant):
+        for w in (self.b_install, self.b_rollback, self.b_refresh, self.variant, self.b_retry_cmp):
             w.setEnabled(not on)
         if not on:
             self.update_buttons()
@@ -353,30 +370,8 @@ class MainWindow(QMainWindow):
             self.l_repo.setText("proton-cachyos-slr not installed")
 
         # Worth updating?
-        parts = []
-        inst = core.installed_build()
-        ci = s.vs_installed
-        if not inst:
-            parts.append("Not installed yet.")
-        elif ci and ci.error:
-            parts.append(f"Couldn't compare installed build: {html.escape(ci.error)}")
-        elif ci:
-            if ci.ahead_by == 0:
-                parts.append("<b>You're on the latest nightly commit.</b>")
-            else:
-                parts.append(
-                    f'<b>Nightly is <a href="{ci.html_url}">{ci.ahead_by} commit{"s" * (ci.ahead_by != 1)}</a> '
-                    "ahead of your build.</b>"
-                )
-        elif inst and not core.commit_from_build(inst):
-            parts.append("Installed build has no commit id to compare.")
-        cs = s.vs_stable
-        if cs and not cs.error:
-            t = f'Nightly is <a href="{cs.html_url}">{cs.ahead_by} commits</a> ahead of stable'
-            if cs.behind_by:
-                t += f" (stable has {cs.behind_by} not in nightly)"
-            parts.append(t + ".")
-        self.l_worth.setText("<br>".join(parts) or "—")
+        ci, cs = s.vs_installed, s.vs_stable
+        self.render_worth(s)
 
         # Changelog tabs
         if rel:
@@ -389,8 +384,8 @@ class MainWindow(QMainWindow):
             self.t_notes.setMarkdown("_No nightly release or Snapshot artifacts found right now._")
         self.t_inst.setHtml(self.commits_html(ci, "your installed build"))
         self.t_stable.setHtml(self.commits_html(cs, f"stable ({st.tag if st else '?'})"))
-        self.tabs.setTabText(1, f"New since installed ({ci.ahead_by})" if ci and not ci.error else "New since installed")
-        self.tabs.setTabText(2, f"Ahead of stable ({cs.ahead_by})" if cs and not cs.error else "Ahead of stable")
+        self.tabs.setTabText(1, f"New since installed ({ci.ahead_by})" if ci and not ci.error_kind else "New since installed")
+        self.tabs.setTabText(2, f"Ahead of stable ({cs.ahead_by})" if cs and not cs.error_kind else "Ahead of stable")
         self.update_buttons()
 
     def source_text(self, s: core.Status, v: str, build: core.Build | None) -> str:
@@ -411,11 +406,68 @@ class MainWindow(QMainWindow):
             return f"<b>None</b>. Couldn't list Snapshot artifacts: {html.escape(s.snapshot_error)}"
         return "<b>None</b>. Nightly is being rebuilt and no Snapshot artifact was found."
 
+    def render_worth(self, s: core.Status):
+        """Fill the two 'Worth updating?' lines. Only friendly text here:
+        error details are in the log file."""
+        inst = core.installed_build()
+        ci = s.vs_installed
+        retry = False
+        if not inst:
+            t = "Not installed yet."
+        elif ci is None:
+            t = ("Installed build has no commit id to compare." if not core.commit_from_build(inst)
+                 else "Nightly commit unknown right now.")
+        elif ci.error_kind == "not_found":
+            t = "Your installed commit isn't on GitHub any more, so it can't be compared."
+        elif ci.error_kind:
+            t = f"Couldn't check how far behind you are ({html.escape(ci.error_text)})."
+            retry = True
+        elif ci.ahead_by == 0:
+            t = "<b>Up to date</b>"
+        else:
+            n = ci.ahead_by
+            t = (f'<b>Nightly is <a href="{ci.html_url}">{n} commit{"s" * (n != 1)}</a> '
+                 "ahead of your build.</b>")
+        self.l_worth_inst.setText(t)
+        self.b_retry_cmp.setVisible(retry)
+
+        cs = s.vs_stable
+        if cs is None:
+            st = ""
+        elif cs.error_kind:
+            st = f"Couldn't compare nightly with stable ({html.escape(cs.error_text)})."
+        else:
+            st = f'Nightly is <a href="{cs.html_url}">{cs.ahead_by} commits</a> ahead of stable'
+            if cs.behind_by:
+                st += f" (stable has {cs.behind_by} not in nightly)"
+            st += "."
+        self.l_worth_stable.setText(st)
+        self.l_worth_stable.setVisible(bool(st))
+
+    def on_retry_compare(self):
+        s = self.state
+        if not s or not s.compared_sha:
+            return
+        gh = core.GitHub(self.cancel)
+        installed, head = core.installed_build(), s.compared_sha
+        self.run(lambda progress, status: core.compare_installed(gh, installed, head),
+                 on_done=self.on_compare_retried, label="Checking how far behind you are…")
+
+    @Slot(object)
+    def on_compare_retried(self, c):
+        self.idle_bar()
+        if self.state:
+            self.state.vs_installed = c
+            self.render()
+        failed = c is not None and c.error_kind not in (None, "not_found")
+        self.msg.setText("Check failed again; details are in the log." if failed
+                         else f"Last checked {datetime.now():%H:%M:%S}")
+
     def commits_html(self, c: core.Compare | None, what: str) -> str:
         if c is None:
             return f"<p><i>Nothing to compare against {html.escape(what)}.</i></p>"
-        if c.error:
-            return f"<p><i>Compare failed: {html.escape(c.error)}</i></p>"
+        if c.error_kind:
+            return f"<p><i>Couldn't load the commit list ({html.escape(c.error_text)}).</i></p>"
         if not c.ahead_by:
             return f"<p>Nightly has no commits beyond {html.escape(what)}.</p>"
         out = [
