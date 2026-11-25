@@ -6,7 +6,6 @@ import html
 import re
 import sys
 import threading
-import traceback
 from datetime import datetime
 
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
@@ -40,10 +39,11 @@ class Worker(QObject):
     done = Signal(object)
     failed = Signal(str, bool)  # message, is_rebuilding
 
-    def __init__(self, fn, *args):
+    def __init__(self, fn, *args, context: str = "The operation"):
         super().__init__()
         self.fn = fn
         self.args = args
+        self.context = context  # e.g. "Installing", used in error text
 
     @Slot()
     def run(self):
@@ -51,11 +51,11 @@ class Worker(QObject):
             res = self.fn(*self.args, progress=self.progress.emit, status=self.status.emit)
         except core.NightlyRebuilding as e:
             self.failed.emit(str(e), True)
-        except core.UpdaterError as e:
+        except core.Cancelled as e:
             self.failed.emit(str(e), False)
-        except Exception as e:  # network errors etc.
-            traceback.print_exc()
-            self.failed.emit(f"{type(e).__name__}: {e}", False)
+        except Exception as e:  # noqa: BLE001 - anything else becomes friendly text
+            # Full details (URLs, tracebacks, tool output) go to the log only.
+            self.failed.emit(core.report_error(e, self.context), False)
         else:
             self.done.emit(res)
 
@@ -403,7 +403,7 @@ class MainWindow(QMainWindow):
             return ("<b>None</b>. The nightly release is missing or being rebuilt, and the Actions "
                     "artifact fallback needs GitHub auth (<code>gh auth login</code>).")
         if s.snapshot_error:
-            return f"<b>None</b>. Couldn't list Snapshot artifacts: {html.escape(s.snapshot_error)}"
+            return f"<b>None</b>. Couldn't list Snapshot artifacts ({html.escape(s.snapshot_error)})."
         return "<b>None</b>. Nightly is being rebuilt and no Snapshot artifact was found."
 
     def render_worth(self, s: core.Status):
@@ -496,7 +496,7 @@ class MainWindow(QMainWindow):
         self.bar.setFormat("")
 
         self.thread = QThread(self)
-        self.worker = Worker(fn, *args)
+        self.worker = Worker(fn, *args, context=label.rstrip("…. ") or "The operation")
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self.on_progress)
@@ -541,7 +541,10 @@ class MainWindow(QMainWindow):
             self.msg.setText(f"⚠ {msg} Retrying automatically in 2 minutes.")
             self.retry_timer.start(REBUILD_RETRY_MS)
         elif msg != "Cancelled.":
-            self.msg.setText(f"⚠ {msg.splitlines()[0]}")
+            first = msg.splitlines()[0]
+            if first.endswith(" Details are in the log:"):
+                first = first[: -len(":")] + "."
+            self.msg.setText(f"⚠ {first}")
             QMessageBox.warning(self, "Proton-CachyOS Nightly", msg)
 
     def refresh(self):
@@ -605,7 +608,8 @@ class MainWindow(QMainWindow):
         try:
             core.save_config(self.cfg)
         except OSError as e:
-            self.msg.setText(f"⚠ Could not save config: {e}")
+            core.report_error(e, "Saving the config")
+            self.msg.setText("⚠ Couldn't save your variant choice. Details are in the log.")
         s = self.state
         if s:
             b = s.pick(v)

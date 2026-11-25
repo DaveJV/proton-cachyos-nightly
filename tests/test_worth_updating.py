@@ -7,27 +7,10 @@ path the app touches points into a temp dir.
 """
 
 import json
-import os
-import sys
-import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
 
-# Must happen before the package is imported: core reads these at import.
-_TMP = tempfile.TemporaryDirectory(prefix="pcn-test-")
-_ROOT = Path(_TMP.name)
-os.environ.update(
-    PCN_DATA_DIR=str(_ROOT / "data"),
-    PCN_COMPAT_DIR=str(_ROOT / "compat"),
-    XDG_CACHE_HOME=str(_ROOT / "cache"),
-    XDG_CONFIG_HOME=str(_ROOT / "config"),
-    GITHUB_TOKEN="test-token",  # keeps `gh auth token` from running
-    QT_QPA_PLATFORM="offscreen",
-    PCN_CPU_FLAGS="avx avx2 bmi1 bmi2 fma movbe f16c abm",
-    PCN_MACHINE="x86_64",
-)
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import support  # noqa: F401  (sets env before the package is imported)
 
 import requests  # noqa: E402
 
@@ -156,9 +139,7 @@ class WorthUpdatingCore(unittest.TestCase):
 class WorthUpdatingUI(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from PySide6.QtWidgets import QApplication
-
-        cls.app = QApplication.instance() or QApplication([])
+        cls.app = support.qapp()
 
     def setUp(self):
         patcher = mock.patch.object(core.GitHub, "RETRY_DELAYS", (0, 0, 0))

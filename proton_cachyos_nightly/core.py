@@ -6,6 +6,7 @@ Everything here is blocking and Qt-free so it can run in a worker thread
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import json
@@ -92,7 +93,17 @@ StatusCb = Callable[[str], None]
 
 
 class UpdaterError(Exception):
-    pass
+    """An error whose message is written for users. `detail` (URLs, tool
+    output, checksums…) goes to the log only, never to the UI."""
+
+    def __init__(self, msg: str = "", detail: str | None = None):
+        super().__init__(msg)
+        self.detail = detail
+
+
+class GitHubNotFound(UpdaterError):
+    def __init__(self, url: str):
+        super().__init__("GitHub couldn't find what the app asked for.", detail=url)
 
 
 class NightlyRebuilding(UpdaterError):
@@ -433,7 +444,7 @@ class GitHub:
                 "Set GITHUB_TOKEN to raise the limit."
             )
         if r.status_code == 404:
-            raise FileNotFoundError(full)
+            raise GitHubNotFound(full)
         r.raise_for_status()
         data = r.json()
         if r.headers.get("ETag"):
@@ -528,7 +539,7 @@ class GitHub:
                     raw = (prev + raw)[-per:]
         except Cancelled:
             raise
-        except FileNotFoundError as e:
+        except GitHubNotFound as e:
             return failed("not_found", e)
         except NeedsAuth as e:
             return failed("github", e)
@@ -773,10 +784,17 @@ def tool_in_use(path: Path = INSTALL_DIR) -> list[str]:
 def ensure_not_in_use() -> None:
     procs = tool_in_use()
     if procs:
-        lines = "\n".join(p[:160] for p in procs[:5])
+        names = []
+        for p in procs:
+            parts = p.split(maxsplit=2)
+            name = os.path.basename(parts[1]) if len(parts) > 1 else "?"
+            if name not in names:
+                names.append(name)
+        shown = ", ".join(names[:4]) + (", …" if len(names) > 4 else "")
         raise ToolInUse(
-            "A game or tool is still running from the install folder. "
-            "Close it and try again.\n\n" + lines
+            f"A game or tool is still running from the install folder ({shown}). "
+            "Close it and try again.",
+            detail="\n".join(procs),
         )
 
 
@@ -820,7 +838,8 @@ def check_status(
     try:
         snapshot = gh.latest_snapshot()
     except (requests.RequestException, UpdaterError, ValueError) as e:
-        snapshot_error = str(e)
+        report_error(e, "Listing Snapshot artifacts")
+        snapshot_error = short_error(e)
 
     nightly = stable = None
     rebuilding = False
@@ -888,6 +907,69 @@ def check_status(
         cpu_hidden=cpu_hidden,
         snapshot_error=snapshot_error,
     )
+
+
+# --------------------------------------------------------------------------
+# User-facing error text
+# --------------------------------------------------------------------------
+
+def short_error(exc: BaseException) -> str:
+    """A few words for inline status text, e.g. 'network error'."""
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+        return "network error"
+    if isinstance(exc, GitHubNotFound):
+        return "not found on GitHub"
+    if isinstance(exc, NeedsAuth):
+        return "GitHub auth problem"
+    if isinstance(exc, (requests.RequestException, ValueError)):
+        return "GitHub error"
+    if isinstance(exc, UpdaterError) and "rate limit" in str(exc):
+        return "GitHub rate limit"
+    if isinstance(exc, OSError):
+        return "file error"
+    return "unexpected error"
+
+
+def friendly_text(exc: BaseException) -> str:
+    """One or two plain sentences for an exception that wasn't written for
+    users. Never includes the exception's own text."""
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+        return "Couldn't reach GitHub (network error). Check your connection and try again."
+    if isinstance(exc, requests.HTTPError):
+        status = exc.response.status_code if exc.response is not None else 0
+        if status >= 500:
+            return "GitHub returned an error. Try again in a few minutes."
+        return "GitHub refused the request."
+    if isinstance(exc, requests.RequestException):
+        return "A network request to GitHub failed."
+    if isinstance(exc, ValueError):  # includes JSON decode errors
+        return "GitHub sent a response the app couldn't read."
+    if isinstance(exc, OSError):
+        if exc.errno == errno.ENOSPC:
+            return "There isn't enough disk space."
+        if exc.errno in (errno.EACCES, errno.EPERM, errno.EROFS):
+            return "Permission denied while writing files."
+        return "A file operation failed."
+    return "Something went wrong."
+
+
+def log_path_display() -> str:
+    home = str(Path.home())
+    p = str(LOG_FILE)
+    return "~" + p[len(home):] if p.startswith(home + os.sep) else p
+
+
+def report_error(exc: BaseException, context: str) -> str:
+    """Log everything about exc and return what the UI may show."""
+    _ensure_log_handler()
+    if isinstance(exc, UpdaterError):
+        if exc.detail:
+            log.warning("%s: %s\n%s", context, exc, exc.detail)
+            return f"{exc} Details are in the log:\n{log_path_display()}"
+        log.warning("%s: %s", context, exc)
+        return str(exc)
+    log.error("%s failed", context, exc_info=exc)
+    return f"{context} failed. {friendly_text(exc)} Details are in the log:\n{log_path_display()}"
 
 
 def same_commit(a: str, b: str) -> bool:
@@ -1011,8 +1093,9 @@ def _install_once(gh: GitHub, variant: str, progress: ProgressCb, status: Status
     got = gh.download(build.tarball, tarball, progress, status)
     if got != expected:
         raise UpdaterError(
-            "SHA-512 mismatch, refusing to install.\n"
-            f"expected {expected[:32]}…\n     got {got[:32]}…"
+            "The download's SHA-512 checksum didn't match, so nothing was installed. "
+            "Try again; if it keeps happening, the upload is probably broken.",
+            detail=f"{build.tarball.name}\nexpected {expected}\n     got {got}",
         )
 
     status("Checksum OK. Extracting…")
@@ -1024,7 +1107,10 @@ def _install_once(gh: GitHub, variant: str, progress: ProgressCb, status: Status
         capture_output=True, text=True,
     )
     if r.returncode != 0:
-        raise UpdaterError("tar failed:\n" + r.stderr.strip()[-2000:])
+        raise UpdaterError(
+            "Extracting the archive failed, so nothing was installed.",
+            detail=f"tar exit {r.returncode}:\n{r.stderr.strip()[-4000:]}",
+        )
     tarball.unlink()
     if gh.cancel.is_set():
         raise Cancelled()

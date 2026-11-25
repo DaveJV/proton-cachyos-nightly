@@ -149,10 +149,13 @@ python -m unittest discover -s tests -v
 
 ## Logs
 
-Details that are kept out of the UI, such as failed GitHub compare calls and
-retries, are written to
-`~/.local/share/proton-cachyos-nightly/proton-cachyos-nightly.log`. The log
-rotates at 1 MB and keeps 2 old files.
+Error dialogs and status lines show only a short, plain message, such as
+"Couldn't reach GitHub (network error)" or "There isn't enough disk space".
+The technical details go to
+`~/.local/share/proton-cachyos-nightly/proton-cachyos-nightly.log`: URLs,
+tracebacks, `tar` output, checksums, the command lines of processes that
+blocked an update, and compare retries. The log rotates at 1 MB and keeps 2 old
+files.
 
 ## Known issues
 
