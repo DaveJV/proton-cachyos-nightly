@@ -138,6 +138,14 @@ and the data folder. `PCN_CPU_FLAGS` (a space-separated flag list) and
 PCN_COMPAT_DIR=/tmp/pcn/compat PCN_DATA_DIR=/tmp/pcn/data python -m proton_cachyos_nightly
 ```
 
+## Known issues
+
+- v4 and LLVM builds are experimental. `x86_64_v4-llvm` crashed wineserver on
+  one machine (Zen 4, Mesa 26.2.x). If something breaks, switch to
+  `x86_64_v3` and use **Rollback** to get back to the previous build.
+- Some Intel 12th gen and newer chips report AVX-512 but cannot run it, so the
+  v4 variants may show up on a CPU that can't run them.
+
 ## License
 
 MIT
