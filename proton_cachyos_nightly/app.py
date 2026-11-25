@@ -84,6 +84,7 @@ class MainWindow(QMainWindow):
         self.thread: QThread | None = None
         self.worker: Worker | None = None
         self.notice = ""
+        self.after_job = None  # runs once the current worker thread has finished
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -366,6 +367,9 @@ class MainWindow(QMainWindow):
         self.worker = None
         self.thread = None
         self.set_busy(False)
+        job, self.after_job = self.after_job, None
+        if job:
+            job()
 
     @Slot(float, float)
     def on_progress(self, done: float, total: float):
@@ -427,7 +431,7 @@ class MainWindow(QMainWindow):
         self.notice = f"✔ Installed {build}. Restart Steam if it was running."
         self.msg.setText(self.notice)
         # Re-check so the compare data reflects the new installed build.
-        QTimer.singleShot(0, self.refresh)
+        self.after_job = self.refresh
 
     def on_rollback(self):
         prev = core.previous_build()
@@ -444,7 +448,7 @@ class MainWindow(QMainWindow):
         self.idle_bar(full=True)
         self.notice = f"✔ Rolled back to {build or 'previous build'}."
         self.msg.setText(self.notice)
-        QTimer.singleShot(0, self.refresh)
+        self.after_job = self.refresh
 
     def on_variant_changed(self, v: str):
         self.cfg["variant"] = v
