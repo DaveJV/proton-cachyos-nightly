@@ -95,17 +95,20 @@ class MainWindow(QMainWindow):
         top.addWidget(QLabel("Variant:"))
         self.variant = QComboBox()
         self.variant.setMinimumWidth(180)
-        self._fill_variants(core.KNOWN_VARIANTS)
-        want = self.cfg.get("variant") or core.default_variant()
-        idx = self.variant.findText(want)
-        self.variant.setCurrentIndex(max(idx, 0))
-        self.variant.currentTextChanged.connect(self.on_variant_changed)
+        self._fill_variants(core.KNOWN_VARIANTS, core.RELEASE_VARIANTS)
+        self._select(self.cfg.get("variant") or core.default_variant())
+        self.variant.currentIndexChanged.connect(self.on_variant_changed)
         top.addWidget(self.variant)
         self.cpu_hint = QLabel(f"(CPU default: {core.default_variant()})")
         self.cpu_hint.setEnabled(False)
         top.addWidget(self.cpu_hint)
         top.addStretch(1)
         root.addLayout(top)
+        self.hidden_note = QLabel()
+        self.hidden_note.setWordWrap(True)
+        self.hidden_note.setTextFormat(Qt.TextFormat.RichText)
+        self.hidden_note.hide()
+        root.addWidget(self.hidden_note)
 
         # Status
         box = QGroupBox("Status")
@@ -122,12 +125,14 @@ class MainWindow(QMainWindow):
         self.l_installed = lab()
         self.l_previous = lab()
         self.l_nightly = lab()
+        self.l_source = lab()
         self.l_stable = lab()
         self.l_repo = lab()
         self.l_worth = lab()
         form.addRow("Installed:", self.l_installed)
         form.addRow("Previous:", self.l_previous)
         form.addRow("Latest nightly:", self.l_nightly)
+        form.addRow("Source:", self.l_source)
         form.addRow("Stable (GitHub):", self.l_stable)
         form.addRow("Stable (CachyOS repo):", self.l_repo)
         form.addRow("Worth updating?", self.l_worth)
@@ -182,16 +187,28 @@ class MainWindow(QMainWindow):
         b.setOpenExternalLinks(True)
         return b
 
-    def _fill_variants(self, variants):
-        cur = self.variant.currentText()
+    def cur_variant(self) -> str:
+        return self.variant.currentData() or ""
+
+    def _select(self, variant: str) -> bool:
+        i = self.variant.findData(variant)
+        if i < 0:
+            return False
+        self.variant.blockSignals(True)
+        self.variant.setCurrentIndex(i)
+        self.variant.blockSignals(False)
+        return True
+
+    def _fill_variants(self, variants, release_variants):
+        cur = self.cur_variant()
         self.variant.blockSignals(True)
         self.variant.clear()
-        self.variant.addItems(variants)
-        if cur:
-            i = self.variant.findText(cur)
-            if i >= 0:
-                self.variant.setCurrentIndex(i)
+        for v in variants:
+            label = v if v in release_variants else f"{v}  (Actions artifact)"
+            self.variant.addItem(label, v)
         self.variant.blockSignals(False)
+        if cur:
+            self._select(cur)
 
     def busy(self) -> bool:
         return self.thread is not None
@@ -203,10 +220,10 @@ class MainWindow(QMainWindow):
             self.update_buttons()
 
     def update_buttons(self):
-        v = self.variant.currentText()
+        v = self.cur_variant()
         inst = core.installed_build()
         s = self.state
-        build = s.nightly.builds.get(v) if s and s.nightly else None
+        build = s.pick(v) if s else None
         self.b_rollback.setEnabled(core.PREVIOUS_DIR.is_dir())
         if not build:
             self.b_install.setText("Install")
@@ -238,22 +255,40 @@ class MainWindow(QMainWindow):
         s = self.state
         if not s:
             return
-        self._fill_variants(s.variants)
+        self._fill_variants(s.variants, core.release_variants(s.nightly))
+        want = self.cfg.get("variant") or core.default_variant()
+        # A saved artifact-only choice is hidden without auth: show the CPU
+        # default for now but keep the saved preference in the config.
+        for target in (want, core.default_variant(), s.variants[0] if s.variants else ""):
+            if self._select(target):
+                break
+        if s.hidden_variants:
+            self.hidden_note.setText(
+                "<i>Hidden: " + ", ".join(s.hidden_variants) + ". These are only built as "
+                "GitHub Actions artifacts, and downloading artifacts needs GitHub auth. "
+                "Run <code>gh auth login</code>, then Refresh.</i>"
+            )
+            self.hidden_note.show()
+        else:
+            self.hidden_note.hide()
         self.render_local()
-        v = self.variant.currentText()
+        v = self.cur_variant()
+        build = s.pick(v)
+        rel = s.release_for(build)
 
-        n = s.nightly
-        if n:
-            b = n.builds.get(v)
-            name = b.name if b else (n.build_name or n.tag)
-            extra = "" if b else f" <i>({v} not published{' yet' if s.rebuilding else ''})</i>"
+        if build:
             self.l_nightly.setText(
-                f'<a href="{n.html_url}">{html.escape(name)}</a> · {fmt_time(n.published_at)}{extra}'
+                f'<a href="{rel.html_url}">{html.escape(build.name)}</a> · {fmt_time(rel.published_at)}'
+            )
+        elif s.nightly:
+            self.l_nightly.setText(
+                f'<a href="{s.nightly.html_url}">{html.escape(s.nightly.build_name or s.nightly.tag)}</a>'
+                f" <i>({v} not published yet)</i>"
             )
         else:
-            self.l_nightly.setText("<i>nightly is being rebuilt</i>")
-        if s.rebuilding:
-            self.l_nightly.setText(self.l_nightly.text() + " <b>— nightly is being rebuilt</b>")
+            self.l_nightly.setText("<i>no nightly release right now</i>")
+
+        self.l_source.setText(self.source_text(s, v, build))
 
         st = s.stable
         self.l_stable.setText(
@@ -302,18 +337,37 @@ class MainWindow(QMainWindow):
         self.l_worth.setText("<br>".join(parts) or "—")
 
         # Changelog tabs
-        if n:
+        if rel:
+            n = rel
             # GitHub renders single newlines in release bodies as line breaks.
             body = re.sub(r"(?<!\n)\n(?!\n)", "  \n", n.body.replace("\r\n", "\n").strip())
             body = body or "_No release notes._"
             self.t_notes.setMarkdown(f"# {n.name}\n\n{body}")
         else:
-            self.t_notes.setMarkdown("_Nightly is being rebuilt; release notes will appear once it is published._")
+            self.t_notes.setMarkdown("_No nightly release or Snapshot artifacts found right now._")
         self.t_inst.setHtml(self.commits_html(ci, "your installed build"))
         self.t_stable.setHtml(self.commits_html(cs, f"stable ({st.tag if st else '?'})"))
         self.tabs.setTabText(1, f"New since installed ({ci.ahead_by})" if ci and not ci.error else "New since installed")
         self.tabs.setTabText(2, f"Ahead of stable ({cs.ahead_by})" if cs and not cs.error else "Ahead of stable")
         self.update_buttons()
+
+    def source_text(self, s: core.Status, v: str, build: core.Build | None) -> str:
+        if build and build.source == core.SRC_RELEASE:
+            return "<b>Release</b>"
+        if build:
+            if s.nightly is None:
+                why = "the nightly release doesn't exist right now"
+            elif v not in core.release_variants(s.nightly):
+                why = "the nightly release doesn't publish this variant"
+            else:
+                why = "the release assets kept 404ing"
+            return f"<b>Actions artifact</b> ({html.escape(build.origin)}), because {why}"
+        if not s.has_token and (s.nightly is None or s.rebuilding):
+            return ("<b>None</b>. The nightly release is missing or being rebuilt, and the Actions "
+                    "artifact fallback needs GitHub auth (<code>gh auth login</code>).")
+        if s.snapshot_error:
+            return f"<b>None</b>. Couldn't list Snapshot artifacts: {html.escape(s.snapshot_error)}"
+        return "<b>None</b>. Nightly is being rebuilt and no Snapshot artifact was found."
 
     def commits_html(self, c: core.Compare | None, what: str) -> str:
         if c is None:
@@ -398,7 +452,7 @@ class MainWindow(QMainWindow):
 
     def refresh(self):
         gh = core.GitHub(self.cancel)
-        v = self.variant.currentText()
+        v = self.cur_variant()
         self.run(lambda progress, status: core.check_status(gh, v, status),
                  on_done=self.on_status, label="Checking for updates…")
 
@@ -421,7 +475,7 @@ class MainWindow(QMainWindow):
                                 f"{core.INSTALL_DIR}\nbefore updating.")
             return
         gh = core.GitHub(self.cancel)
-        v = self.variant.currentText()
+        v = self.cur_variant()
         self.run(lambda progress, status: core.install(gh, v, progress, status),
                  on_done=self.on_installed, label="Installing…")
 
@@ -450,13 +504,22 @@ class MainWindow(QMainWindow):
         self.msg.setText(self.notice)
         self.after_job = self.refresh
 
-    def on_variant_changed(self, v: str):
+    def on_variant_changed(self, _index: int):
+        v = self.cur_variant()
         self.cfg["variant"] = v
         try:
             core.save_config(self.cfg)
         except OSError as e:
             self.msg.setText(f"⚠ Could not save config: {e}")
-        self.render() if self.state else self.render_local()
+        s = self.state
+        if s:
+            b = s.pick(v)
+            if b and b.sha != s.compared_sha:
+                self.refresh()  # different commit: redo the compares
+            else:
+                self.render()
+        else:
+            self.render_local()
 
     def closeEvent(self, ev):
         if self.busy():
