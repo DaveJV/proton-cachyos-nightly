@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Proton-CachyOS Nightly
+GenericName=Proton Updater
+Comment=Install and update proton-cachyos nightly builds for Steam and Faugus
+Exec=proton-cachyos-nightly
+Icon=proton-cachyos-nightly
+Terminal=false
+Categories=Game;
+Keywords=proton;wine;steam;cachyos;faugus;compatibility;
+StartupWMClass=proton-cachyos-nightly

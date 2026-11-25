@@ -75,7 +75,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Proton-CachyOS Nightly")
-        self.setWindowIcon(QIcon.fromTheme("steam", QIcon.fromTheme("system-software-update")))
+        self.setWindowIcon(QIcon.fromTheme("proton-cachyos-nightly", QIcon.fromTheme("system-software-update")))
         self.resize(820, 680)
 
         self.cfg = core.load_config()
