@@ -113,32 +113,26 @@ def save_config(cfg: dict) -> None:
 
 
 # --------------------------------------------------------------------------
-# CPU detection
+# Variant defaults
 # --------------------------------------------------------------------------
 
-_V3_FLAGS = {"avx", "avx2", "bmi1", "bmi2", "f16c", "fma", "abm", "movbe", "xsave"}
-_V4_FLAGS = {"avx512f", "avx512bw", "avx512cd", "avx512dq", "avx512vl"}
+DEFAULT_VARIANT = "x86_64_v3"
 
-
-def cpu_flags() -> set[str]:
-    try:
-        for line in Path("/proc/cpuinfo").read_text().splitlines():
-            if line.startswith("flags"):
-                return set(line.split(":", 1)[1].split())
-    except OSError:
-        pass
-    return set()
+# CachyOS marks the v4 builds as largely untested; the v3 LLVM build is
+# grouped with them here as well.
+EXPERIMENTAL_VARIANTS = {"x86_64_v4", "x86_64_v3-llvm", "x86_64_v4-llvm"}
+EXPERIMENTAL_NOTE = (
+    "Experimental: CachyOS marks the v4 builds as largely untested, "
+    "and this build may refuse to work."
+)
 
 
 def default_variant() -> str:
+    """x86_64_v3 regardless of CPU features (arm64 on ARM machines, where
+    no x86 build can run)."""
     if platform.machine() in ("aarch64", "arm64"):
         return "arm64"
-    flags = cpu_flags()
-    if _V3_FLAGS <= flags and _V4_FLAGS <= flags:
-        return "x86_64_v4-llvm"
-    if _V3_FLAGS <= flags:
-        return "x86_64_v3-llvm"
-    return "x86_64"
+    return DEFAULT_VARIANT
 
 
 # --------------------------------------------------------------------------

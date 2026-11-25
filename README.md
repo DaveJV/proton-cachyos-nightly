@@ -10,8 +10,10 @@ for Steam and [Faugus Launcher](https://github.com/Faugus/faugus-launcher).
   `x86_64_v3-llvm`, `x86_64_v3`, `x86_64` and `arm64`. With GitHub auth you
   also get the variants that are only built as Actions artifacts:
   `x86_64_v4` (GCC), `x86_64-llvm`, `x86_64-wow64` and `x86_64-llvm-wow64`.
-  The default is `x86_64_v4-llvm` when the CPU supports x86-64-v4 (AVX-512),
-  otherwise `x86_64_v3-llvm`.
+  The default is `x86_64_v3` regardless of CPU, or `arm64` on ARM machines.
+  `x86_64_v4`, `x86_64_v3-llvm` and `x86_64_v4-llvm` are labelled
+  **experimental**: CachyOS marks the v4 builds as largely untested, and they
+  may refuse to work.
 - Falls back to **Snapshot workflow artifacts** when the nightly release
   disappears (see below). The UI shows which source is in use:
   **Release** or **Actions artifact**.

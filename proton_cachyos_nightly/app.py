@@ -99,7 +99,7 @@ class MainWindow(QMainWindow):
         self._select(self.cfg.get("variant") or core.default_variant())
         self.variant.currentIndexChanged.connect(self.on_variant_changed)
         top.addWidget(self.variant)
-        self.cpu_hint = QLabel(f"(CPU default: {core.default_variant()})")
+        self.cpu_hint = QLabel(f"(default: {core.default_variant()})")
         self.cpu_hint.setEnabled(False)
         top.addWidget(self.cpu_hint)
         top.addStretch(1)
@@ -197,6 +197,7 @@ class MainWindow(QMainWindow):
         self.variant.blockSignals(True)
         self.variant.setCurrentIndex(i)
         self.variant.blockSignals(False)
+        self._update_variant_tooltip()
         return True
 
     def _fill_variants(self, variants, release_variants):
@@ -204,11 +205,27 @@ class MainWindow(QMainWindow):
         self.variant.blockSignals(True)
         self.variant.clear()
         for v in variants:
-            label = v if v in release_variants else f"{v}  (Actions artifact)"
+            tags = []
+            if v in core.EXPERIMENTAL_VARIANTS:
+                tags.append("experimental")
+            if v not in release_variants:
+                tags.append("Actions artifact")
+            label = f"{v}  ({', '.join(tags)})" if tags else v
             self.variant.addItem(label, v)
+            if v in core.EXPERIMENTAL_VARIANTS:
+                self.variant.setItemData(
+                    self.variant.count() - 1, core.EXPERIMENTAL_NOTE, Qt.ItemDataRole.ToolTipRole
+                )
         self.variant.blockSignals(False)
         if cur:
             self._select(cur)
+        self._update_variant_tooltip()
+
+    def _update_variant_tooltip(self):
+        # Closed combo shows the selected item's tooltip too.
+        self.variant.setToolTip(
+            core.EXPERIMENTAL_NOTE if self.cur_variant() in core.EXPERIMENTAL_VARIANTS else ""
+        )
 
     def busy(self) -> bool:
         return self.thread is not None
@@ -506,6 +523,7 @@ class MainWindow(QMainWindow):
 
     def on_variant_changed(self, _index: int):
         v = self.cur_variant()
+        self._update_variant_tooltip()
         self.cfg["variant"] = v
         try:
             core.save_config(self.cfg)
