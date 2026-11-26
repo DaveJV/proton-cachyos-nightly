@@ -157,7 +157,8 @@ EXPERIMENTAL_NOTE = (
 )
 AVX512_WARNING = (
     "Some Intel 12th gen and newer chips report AVX-512 but cannot run it. "
-    "If games crash or Proton won't start, switch to x86_64_v3."
+    "If games crash or Proton won't start, use Rollback or pick a variant "
+    "without v4 in its name."
 )
 
 
@@ -399,6 +400,115 @@ def commit_from_build(name: str) -> str | None:
 def variant_from_build(name: str) -> str | None:
     m = ASSET_RE.match(name + ".tar.xz")
     return m.group("variant") if m else None
+
+
+# --------------------------------------------------------------------------
+# Display helpers (short names, readable changelog)
+# --------------------------------------------------------------------------
+
+# "11.0-20261125" in build names and tags, "11.0.20261015" in repo versions.
+VERSION_DATE_RE = re.compile(r"(?P<version>\d+\.\d+)[.-](?P<date>\d{8})(?!\d)")
+SHORT_NAME_MAX = 32
+
+
+def short_version(text: str) -> str | None:
+    """'proton-cachyos-11.0-20261125-base-240-g2ca6427f-x86_64_v3' -> '11.0 · 2026-11-25'."""
+    m = VERSION_DATE_RE.search(text)
+    if not m:
+        return None
+    d = m.group("date")
+    return f"{m.group('version')} · {d[:4]}-{d[4:6]}-{d[6:]}"
+
+
+def short_build_name(name: str) -> str:
+    """Short display name for a build, without the variant (shown separately).
+    Falls back to the name minus prefix/variant, elided in the middle."""
+    short = short_version(name)
+    if short:
+        return short
+    variant = variant_from_build(name)
+    s = name[: -len(variant) - 1] if variant else name
+    s = s.removeprefix("proton-").removeprefix("cachyos-")
+    if len(s) > SHORT_NAME_MAX:
+        half = (SHORT_NAME_MAX - 1) // 2
+        s = s[:half] + "…" + s[-half:]
+    return s
+
+
+FULL_CHANGELOG_RE = re.compile(r"\*\*Full Changelog\*\*:\s*(?P<url>https://github\.com/\S+)")
+
+
+def full_changelog_url(rel: Release | None) -> str | None:
+    """The 'Full Changelog' compare link from a release body, if any."""
+    m = FULL_CHANGELOG_RE.search(rel.body) if rel else None
+    return m.group("url") if m else None
+
+
+# Commit titles look like "area: what changed". Areas with a friendlier name;
+# anything else is shown as written.
+AREA_NAMES = {
+    "proton": "Proton",
+    "wine": "Wine",
+    "protonfixes": "Game fixes",
+    "patches": "Game fixes",
+    "dxvk": "DXVK",
+    "dxvk-low-latency": "DXVK",
+    "d7vk": "DXVK",
+    "vkd3d": "VKD3D",
+    "vkd3d-proton": "VKD3D",
+    "vkd3d-low-latency": "VKD3D",
+    "nvidia-libs": "NVIDIA",
+    "dxvk-nvapi": "NVIDIA",
+    "meson": "Media libraries",
+    "build": "Build and CI",
+    "workflows": "Build and CI",
+}
+LAST_AREAS = ("Other", "Build and CI")  # listed after everything else
+AREA_RE = re.compile(r"^(?P<area>[A-Za-z0-9_.+/-]{1,32}):\s+(?P<rest>.+)$")
+REVERT_RE = re.compile(r'^Revert "(?P<title>.+)"$')
+
+
+@dataclass
+class ChangeItem:
+    text: str
+    count: int
+
+
+def _split_title(title: str) -> tuple[str, str]:
+    """('Wine', 'Update submodule') from 'wine: update submodule'."""
+    title = title.strip()
+    prefix = ""
+    if m := REVERT_RE.match(title):
+        title, prefix = m.group("title"), "Revert: "
+    title = title.removeprefix("DONOTPICK: ")
+    area = "Other"
+    if m := AREA_RE.match(title):
+        key = m.group("area").lower()
+        area = AREA_NAMES.get(key, m.group("area"))
+        title = m.group("rest")
+    text = prefix + title[:1].upper() + title[1:]
+    return area, text
+
+
+def group_commits(commits: list[tuple[str, str]]) -> list[tuple[str, list[ChangeItem]]]:
+    """Group (sha, title) commits, newest first, by area. Repeated titles
+    are merged with a count. Biggest groups first; build/CI and uncategorised
+    commits last."""
+    groups: dict[str, dict[str, ChangeItem]] = {}
+    for _sha, title in commits:
+        area, text = _split_title(title)
+        items = groups.setdefault(area, {})
+        if text in items:
+            items[text].count += 1
+        else:
+            items[text] = ChangeItem(text, 1)
+
+    def order(kv):
+        area, items = kv
+        last = LAST_AREAS.index(area) + 1 if area in LAST_AREAS else 0
+        return (last, -sum(i.count for i in items.values()))
+
+    return [(area, list(items.values())) for area, items in sorted(groups.items(), key=order)]
 
 
 # --------------------------------------------------------------------------

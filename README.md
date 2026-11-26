@@ -1,70 +1,31 @@
 # proton-cachyos-nightly
 
-A small PySide6 desktop app that installs and updates the
-[proton-cachyos](https://github.com/CachyOS/proton-cachyos) **nightly** builds
-for Steam and [Faugus Launcher](https://github.com/Faugus/faugus-launcher).
+A desktop app that installs and updates the nightly builds of
+[Proton-CachyOS](https://github.com/CachyOS/proton-cachyos) for Steam and
+[Faugus Launcher](https://github.com/Faugus/faugus-launcher). Nightlies get
+game fixes and new features before they reach a stable release. This app
+installs them in one click and lets you go back if one breaks a game.
 
-- Picks the newest pre-release whose tag contains `nightly`, so the
-  `11.0` part is never hardcoded.
-- Lets you choose a variant. The release publishes `x86_64_v4-llvm`,
-  `x86_64_v3-llvm`, `x86_64_v3`, `x86_64` and `arm64`. With GitHub auth you
-  also get the variants that are only built as Actions artifacts:
-  `x86_64_v4` (GCC), `x86_64-llvm`, `x86_64-wow64` and `x86_64-llvm-wow64`.
-- Picks a default variant and filters the list using the `flags` line from
-  `/proc/cpuinfo`:
-  - **Default:** `x86_64_v3` (GCC) if the CPU has `avx2`, `bmi1`, `bmi2`,
-    `fma`, `movbe`, `f16c` and `lzcnt` (reported as `abm`). Otherwise plain
-    `x86_64`. The default is never a v4 or LLVM build.
-  - **v4 variants** appear only if `avx512f`, `avx512bw`, `avx512cd`,
-    `avx512dq` and `avx512vl` are all present. They are labelled
-    **experimental**: CachyOS marks v4 as largely untested, and some Intel
-    12th gen and newer chips report AVX-512 but cannot run it.
-    `x86_64_v3-llvm` is also labelled experimental.
-  - **v3 variants** are hidden on CPUs that lack the v3 flags.
-  - **Non-x86 machines** are offered only the `arm64` build.
-  - Hidden variants are summarised next to the dropdown ("ⓘ N variants
-    hidden"), with a tooltip that lists the missing flags. Installing a
-    variant the CPU can't run is refused.
-- Falls back to **Snapshot workflow artifacts** when the nightly release
-  disappears (see below). The UI shows which source is in use:
-  **Release** or **Actions artifact**.
-- Shows the installed build, the latest nightly, the latest stable GitHub
-  release and the CachyOS repo package version (`pacman -Q proton-cachyos-slr`).
-  The repo package can be newer than GitHub's stable releases.
-- **Worth updating?** It takes the commit sha from the build name
-  (`…-g2ca6427f-…`) and uses the GitHub compare API to show how many commits
-  the nightly is ahead of your installed build and of stable, with commit titles.
-- Shows the release notes as markdown.
-- Verifies the SHA-512 before extracting, and keeps one previous build for
-  rollback.
-- Handles the nightly being rebuilt. The upstream Snapshot workflow deletes
-  and recreates the release on every build, so assets can be missing for a few
-  minutes. The app retries and shows "nightly is being rebuilt".
+## Features
 
-Network and disk work runs in a worker thread, so the window never freezes.
+- Installs or updates to the latest nightly in one click.
+- Tells you when an update is available and lists what changed since your build.
+- Shows what the nightly adds over the current stable release.
+- Picks the right build for your CPU and hides builds your CPU can't run.
+- Rolls back to the previous build in one click.
+- Checks every download for corruption before installing it.
+- Keeps the same tool name across updates, so Steam and Faugus don't need to be set up again.
 
-## Sources: Release vs Actions artifact
+## Before you install
 
-The rolling `…-nightly` pre-release in CachyOS/proton-cachyos is the primary
-source. The maintainers have added and reverted it before, so the app doesn't
-rely on it alone. It uses the newest successful **Snapshot** workflow run
-instead (`snapshot.yml`, `push` event, branch ending in `/dev`) when:
-
-- no nightly pre-release exists;
-- the release's assets for your variant are missing or 404 three times in a
-  row; or
-- you picked a variant the release never publishes, such as `x86_64_v4` GCC.
-
-Artifacts are listed through the API and expired ones are skipped. Each
-artifact is a zip holding one file. The app downloads it, unzips it, verifies
-the SHA-512 from the matching `.sha512sum` artifact, then extracts the
-`.tar.xz` as usual.
-
-Downloading an artifact zip requires authentication, so the app uses
-`$GITHUB_TOKEN`, `$GH_TOKEN`, or the output of `gh auth token`. If none are
-available, the app still works with the release. It hides the artifact-only
-variants and says why. If the release is gone, it tells you to run
-`gh auth login`.
+- **Nightly builds are experimental.** Any of them can be unstable, including
+  the default build the app picks for you. Builds labelled *experimental* in
+  the app are the least tested. Keep a stable Proton installed for games you
+  can't afford to break.
+- **GitHub sign-in is optional.** You only need it for the extra builds that
+  aren't part of the nightly release, and for installing while the nightly
+  release is missing or being rebuilt. To sign in, install `github-cli` and
+  run `gh auth login`.
 
 ## Install (CachyOS / Arch)
 
@@ -74,96 +35,51 @@ cd proton-cachyos-nightly
 makepkg -si
 ```
 
-This installs the `proton-cachyos-nightly-git` package system-wide via pacman:
-`/usr/bin/proton-cachyos-nightly`, a menu entry and an icon. Dependencies:
-`python`, `pyside6`, `python-requests`, `tar`, `xz`, `procps-ng`. Optional:
-`github-cli`, for the Actions artifact fallback.
-
-To run from a checkout without installing:
-
-```sh
-python -m proton_cachyos_nightly
-```
-
-## Where things go
-
-| Path | What |
-|---|---|
-| `~/.local/share/Steam/compatibilitytools.d/proton-cachyos-nightly/` | The active build. The folder name never changes. |
-| `…/proton-cachyos-nightly/.build` | Build name, e.g. `proton-cachyos-11.0-20261125-base-240-g2ca6427f-x86_64_v4-llvm` |
-| `~/.local/share/proton-cachyos-nightly/previous/` | The previous build, used by Rollback |
-| `~/.local/share/proton-cachyos-nightly/tmp-*` | Temporary download and extract dir, removed afterwards |
-| `~/.config/proton-cachyos-nightly/config.json` | Chosen variant |
-| `~/.cache/proton-cachyos-nightly/api/` | ETag cache for GitHub API responses |
-
-The internal name and `display_name` in `compatibilitytool.vdf` are rewritten
-to `proton-cachyos-nightly`. Steam and Faugus therefore keep the same tool
-selected across updates. Restart Steam after the first install so it picks up
-the tool.
-
-### Install / Update
-
-1. Find the newest nightly and the asset for the chosen variant. Fall back to
-   Snapshot artifacts as described above.
-2. Check that nothing is running from the install folder
-   (`pgrep -f <install path>`). If something is, refuse.
-3. Download the `.sha512sum`, then stream the `.tar.xz` while hashing it.
-   Artifact zips are unzipped first.
-4. Abort on checksum mismatch.
-5. Extract with `tar` into a temp dir under `~/.local/share/proton-cachyos-nightly/`.
-6. Rewrite the `.vdf` and write `.build`.
-7. Move the current build to `previous/`, replacing the old one, and move the
-   new build into place.
-
-### Rollback
-
-Swaps `previous/` and the installed folder, so you can roll forward again.
-It refuses while a process is running from the install folder.
-
-## GitHub rate limit
-
-Unauthenticated GitHub API calls are limited to 60 per hour. A refresh uses
-about 5 to 7 calls. Responses are cached with ETags, and `304 Not Modified`
-replies don't count against the limit. When a token is available (see
-above), the app uses it for every API call, which raises the limit to
-5000 per hour.
-
-## Testing without touching Steam
-
-`PCN_COMPAT_DIR` and `PCN_DATA_DIR` override the compatibilitytools.d folder
-and the data folder. `PCN_CPU_FLAGS` (a space-separated flag list) and
-`PCN_MACHINE` (e.g. `aarch64`) override CPU detection:
-
-```sh
-PCN_COMPAT_DIR=/tmp/pcn/compat PCN_DATA_DIR=/tmp/pcn/data python -m proton_cachyos_nightly
-```
-
-## Tests
-
-The tests run offline. HTTP calls are mocked and every path points into a
-temp dir. They use only the standard library plus the runtime dependencies.
-
-```sh
-python -m unittest discover -s tests -v
-```
-
-## Logs
-
-Error dialogs and status lines show only a short, plain message, such as
-"Couldn't reach GitHub (network error)" or "There isn't enough disk space".
-The technical details go to
-`~/.local/share/proton-cachyos-nightly/proton-cachyos-nightly.log`: URLs,
-tracebacks, `tar` output, checksums, the command lines of processes that
-blocked an update, and compare retries. The log rotates at 1 MB and keeps 2 old
-files.
+Open **Proton-CachyOS Nightly** from your app menu and click **Install**.
+Restart Steam once, then choose `proton-cachyos-nightly` as the compatibility
+tool for a game in Steam or Faugus.
 
 ## Known issues
 
-- v4 and LLVM builds are experimental. `x86_64_v4-llvm` crashed wineserver on
-  one machine (Zen 4, Mesa 26.2.x). If something breaks, switch to
-  `x86_64_v3` and use **Rollback** to get back to the previous build.
-- Some Intel 12th gen and newer chips report AVX-512 but cannot run it, so the
-  v4 variants may show up on a CPU that can't run them.
+- Any nightly can be unstable, x86_64_v3 included. The v4 and LLVM builds are
+  the least tested: `x86_64_v4-llvm` crashed wineserver on one machine (Zen 4,
+  Mesa 26.2.x). If a build breaks a game, click **Rollback**, or try a
+  different variant.
+- Some Intel 12th gen and newer CPUs report AVX-512 support they can't use,
+  so the app may offer v4 builds on a CPU that can't run them.
+
+## Technical details
+
+**Where builds come from.** The app uses the newest pre-release in
+CachyOS/proton-cachyos whose tag contains `nightly`. If that release is
+missing, its files for your variant keep failing to download, or you pick a
+variant it doesn't publish (`x86_64_v4`, `x86_64-llvm`, `x86_64-wow64`,
+`x86_64-llvm-wow64`), it uses the artifacts of the newest successful
+`snapshot.yml` workflow run on a `*/dev` branch instead. Downloading artifacts
+needs a GitHub token: `$GITHUB_TOKEN`, `$GH_TOKEN` or `gh auth token`.
+
+**Default variant.** Detected from `/proc/cpuinfo`: `x86_64_v3` if the CPU
+supports x86-64-v3, otherwise `x86_64`, and `arm64` on non-x86 machines.
+v4 builds are only offered when all the AVX-512 flags they need are present.
+
+**Install and rollback.** The app refuses to update while anything is running
+from the install folder. It verifies the SHA-512 checksum, extracts into a
+temporary folder, sets the tool name in `compatibilitytool.vdf` to
+`proton-cachyos-nightly`, then moves the current build to `previous/` and the
+new one into place. Rollback swaps the two folders.
+
+| Path | What |
+|---|---|
+| `~/.local/share/Steam/compatibilitytools.d/proton-cachyos-nightly/` | The installed build. `.build` holds its full name. |
+| `~/.local/share/proton-cachyos-nightly/previous/` | The previous build, used by Rollback |
+| `~/.local/share/proton-cachyos-nightly/proton-cachyos-nightly.log` | Error details (the UI shows a short message only) |
+| `~/.config/proton-cachyos-nightly/config.json` | Chosen variant |
+| `~/.cache/proton-cachyos-nightly/api/` | Cached GitHub API responses |
+
+**Development.** Run from a checkout with `python -m proton_cachyos_nightly`.
+Run the offline tests with `python -m unittest discover -s tests -v`.
+`PCN_COMPAT_DIR` and `PCN_DATA_DIR` redirect the install and data folders;
+`PCN_CPU_FLAGS` and `PCN_MACHINE` override CPU detection.
 
 ## License
 

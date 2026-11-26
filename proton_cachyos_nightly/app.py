@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import html
-import re
 import sys
 import threading
 from datetime import datetime
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QIcon, QPalette
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QDesktopServices, QFont, QIcon, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
-    QFormLayout,
+    QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QStyle,
     QTabWidget,
     QTextBrowser,
     QVBoxLayout,
@@ -30,7 +31,6 @@ from PySide6.QtWidgets import (
 from . import __version__, core
 
 REBUILD_RETRY_MS = 2 * 60 * 1000
-COMMIT_URL = f"https://github.com/{core.REPO}/commit/"
 
 
 class Worker(QObject):
@@ -124,58 +124,62 @@ class MainWindow(QMainWindow):
         self.hidden_note.hide()
         root.addWidget(self.hidden_note)
 
-        # Status
+        # Status: three headline columns, then a smaller grid of details.
+        # Colours come from the palette only (PlaceholderText for muted text,
+        # Link for links), so the panel follows the Qt/KDE colour scheme.
         box = QGroupBox("Status")
-        form = QFormLayout(box)
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        sv = QVBoxLayout(box)
+        heads = QHBoxLayout()
+        heads.setSpacing(16)
 
-        def lab():
-            l = QLabel("…")
-            l.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-            l.setOpenExternalLinks(True)
-            l.setWordWrap(True)
-            return l
+        self.l_installed, self.l_installed_sub = self._column(heads, "Installed")
+        heads.addWidget(self._line(QFrame.Shape.VLine))
+        self.l_nightly, self.l_nightly_sub = self._column(heads, "Latest nightly")
+        heads.addWidget(self._line(QFrame.Shape.VLine))
 
-        self.l_installed = lab()
-        self.l_previous = lab()
-        self.l_nightly = lab()
-        self.l_source = lab()
-        self.l_stable = lab()
-        self.l_repo = lab()
-        # "Worth updating?": installed line (+ Retry) above the stable line,
-        # so a failed installed compare never hides the stable comparison.
-        self.l_worth_inst = lab()
+        # Update status: theme icon + headline, detail line + Retry.
+        upd = QVBoxLayout()
+        upd.setSpacing(2)
+        upd.addWidget(self._caption("Update status"))
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.i_update = QLabel()
+        row.addWidget(self.i_update)
+        self.l_update = self._value_label(headline=True)
+        row.addWidget(self.l_update, 1)
+        upd.addLayout(row)
+        row = QHBoxLayout()
+        self.l_update_sub = self._value_label(muted=True)
+        row.addWidget(self.l_update_sub, 1)
         self.b_retry_cmp = QPushButton(QIcon.fromTheme("view-refresh"), "Retry")
-        self.b_retry_cmp.setToolTip("Check again how far your build is behind the nightly")
+        self.b_retry_cmp.setToolTip("Check again whether an update is available")
         self.b_retry_cmp.clicked.connect(self.on_retry_compare)
         self.b_retry_cmp.hide()
-        self.l_worth_stable = lab()
-        worth = QWidget()
-        wv = QVBoxLayout(worth)
-        wv.setContentsMargins(0, 0, 0, 0)
-        wv.setSpacing(2)
-        inst_row = QHBoxLayout()
-        inst_row.setContentsMargins(0, 0, 0, 0)
-        inst_row.addWidget(self.l_worth_inst, 1)
-        inst_row.addWidget(self.b_retry_cmp, 0, Qt.AlignmentFlag.AlignTop)
-        wv.addLayout(inst_row)
-        wv.addWidget(self.l_worth_stable)
-        form.addRow("Installed:", self.l_installed)
-        form.addRow("Previous:", self.l_previous)
-        form.addRow("Latest nightly:", self.l_nightly)
-        form.addRow("Source:", self.l_source)
-        form.addRow("Stable (GitHub):", self.l_stable)
-        form.addRow("Stable (CachyOS repo):", self.l_repo)
-        form.addRow("Worth updating?", worth)
+        row.addWidget(self.b_retry_cmp, 0, Qt.AlignmentFlag.AlignTop)
+        upd.addLayout(row)
+        upd.addStretch(1)
+        heads.addLayout(upd, 1)
+        sv.addLayout(heads)
+
+        sv.addWidget(self._line(QFrame.Shape.HLine))
+        details = QGridLayout()
+        details.setHorizontalSpacing(8)
+        details.setVerticalSpacing(2)
+        self.l_previous = self._detail(details, 0, 0, "Previous")
+        self.l_source = self._detail(details, 0, 2, "Source")
+        self.l_stable = self._detail(details, 1, 0, "Stable (GitHub)")
+        self.l_repo = self._detail(details, 1, 2, "Stable (CachyOS repo)")
+        details.setColumnStretch(1, 1)
+        details.setColumnStretch(3, 1)
+        sv.addLayout(details)
         root.addWidget(box)
 
-        # Changelog
+        # Changes: built from the compare data (the nightly release body is
+        # only a version line and a link).
         self.tabs = QTabWidget()
-        self.t_notes = self._browser()
-        self.t_inst = self._browser()
+        self.t_new = self._browser()
         self.t_stable = self._browser()
-        self.tabs.addTab(self.t_notes, "Release notes")
-        self.tabs.addTab(self.t_inst, "New since installed")
+        self.tabs.addTab(self.t_new, "What's new")
         self.tabs.addTab(self.t_stable, "Ahead of stable")
         root.addWidget(self.tabs, 1)
 
@@ -217,6 +221,82 @@ class MainWindow(QMainWindow):
         b = QTextBrowser()
         b.setOpenExternalLinks(True)
         return b
+
+    def _scaled_font(self, factor: float, bold: bool = False) -> QFont:
+        f = QFont(self.font())
+        f.setPointSizeF(f.pointSizeF() * factor)
+        f.setBold(bold)
+        return f
+
+    def _caption(self, text: str) -> QLabel:
+        l = QLabel(text)
+        l.setFont(self._scaled_font(0.9))
+        l.setForegroundRole(QPalette.ColorRole.PlaceholderText)
+        return l
+
+    def _value_label(self, headline: bool = False, muted: bool = False) -> QLabel:
+        l = QLabel("…" if headline else "")
+        l.setTextFormat(Qt.TextFormat.RichText)
+        l.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        l.linkActivated.connect(self.on_link)
+        l.setWordWrap(True)
+        if headline:
+            l.setFont(self._scaled_font(1.25, bold=True))
+        if muted:
+            l.setForegroundRole(QPalette.ColorRole.PlaceholderText)
+        return l
+
+    def _column(self, layout: QHBoxLayout, caption: str) -> tuple[QLabel, QLabel]:
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        col.addWidget(self._caption(caption))
+        value = self._value_label(headline=True)
+        sub = self._value_label(muted=True)
+        col.addWidget(value)
+        col.addWidget(sub)
+        col.addStretch(1)
+        layout.addLayout(col, 1)
+        return value, sub
+
+    def _detail(self, grid: QGridLayout, row: int, col: int, caption: str) -> QLabel:
+        cap = self._caption(caption + ":")
+        cap.setFont(self.font())
+        grid.addWidget(cap, row, col, Qt.AlignmentFlag.AlignTop)
+        value = self._value_label()
+        grid.addWidget(value, row, col + 1, Qt.AlignmentFlag.AlignTop)
+        return value
+
+    @staticmethod
+    def _line(shape: QFrame.Shape) -> QFrame:
+        f = QFrame()
+        f.setFrameShape(shape)
+        f.setFrameShadow(QFrame.Shadow.Sunken)
+        return f
+
+    def _set_icon(self, *names: str, fallback: QStyle.StandardPixmap):
+        icon = next((i for n in names if not (i := QIcon.fromTheme(n)).isNull()),
+                    self.style().standardIcon(fallback))
+        size = self.l_update.fontMetrics().height()
+        self.i_update.setPixmap(icon.pixmap(size, size))
+
+    def _muted_css(self) -> str:
+        return self.palette().color(QPalette.ColorRole.PlaceholderText).name()
+
+    @Slot(str)
+    def on_link(self, href: str):
+        if href == "#whats-new":
+            self.tabs.setCurrentWidget(self.t_new)
+        else:
+            QDesktopServices.openUrl(QUrl(href))
+
+    @staticmethod
+    def build_html(name: str) -> str:
+        return html.escape(core.short_build_name(name))
+
+    @staticmethod
+    def build_tip(name: str, extra: str = "") -> str:
+        """Full build name (plus optional extra line) for a tooltip."""
+        return name + (f"\n{extra}" if extra else "")
 
     def cur_variant(self) -> str:
         return self.variant.currentData() or ""
@@ -302,11 +382,26 @@ class MainWindow(QMainWindow):
 
     def render_local(self):
         inst = core.installed_build()
-        self.l_installed.setText(
-            f"<b>{html.escape(inst)}</b>" if inst
-            else ("installed, unknown build (no .build file)" if core.INSTALL_DIR.is_dir() else "not installed")
-        )
-        self.l_previous.setText(html.escape(core.previous_build() or "none"))
+        if inst:
+            self.l_installed.setText(self.build_html(inst))
+            self.l_installed_sub.setText(html.escape(core.variant_from_build(inst) or ""))
+        elif core.INSTALL_DIR.is_dir():
+            self.l_installed.setText("Unknown build")
+            self.l_installed_sub.setText("No build information found")
+        else:
+            self.l_installed.setText("Not installed")
+            self.l_installed_sub.setText("")
+        self.l_installed.setToolTip(inst or "")
+
+        prev = core.previous_build()
+        if prev and core.variant_from_build(prev):
+            self.l_previous.setText(f"{self.build_html(prev)} ({html.escape(core.variant_from_build(prev))})")
+        else:
+            self.l_previous.setText(html.escape(prev or "None"))
+        self.l_previous.setToolTip(prev or "")
+        if self.state is None:
+            self.l_update.setText("Checking…")
+            self.i_update.clear()
         self.update_buttons()
 
     def render(self):
@@ -336,113 +431,175 @@ class MainWindow(QMainWindow):
         rel = s.release_for(build)
 
         if build:
-            self.l_nightly.setText(
-                f'<a href="{rel.html_url}">{html.escape(build.name)}</a> · {fmt_time(rel.published_at)}'
-            )
+            self.l_nightly.setText(self.build_html(build.name))
+            self.l_nightly_sub.setText(
+                f'{html.escape(build.variant)} · <a href="{html.escape(rel.html_url)}">View on GitHub</a>')
+            self.l_nightly.setToolTip(self.build_tip(build.name, f"Published {fmt_time(rel.published_at)}"))
         elif s.nightly:
-            self.l_nightly.setText(
-                f'<a href="{s.nightly.html_url}">{html.escape(s.nightly.build_name or s.nightly.tag)}</a>'
-                f" <i>({v} not published yet)</i>"
-            )
+            name = s.nightly.build_name or s.nightly.tag
+            self.l_nightly.setText(self.build_html(name))
+            self.l_nightly_sub.setText(f"{html.escape(v)} not published yet")
+            self.l_nightly.setToolTip(name)
         else:
-            self.l_nightly.setText("<i>no nightly release right now</i>")
+            self.l_nightly.setText("Unavailable")
+            self.l_nightly_sub.setText("No nightly release right now")
+            self.l_nightly.setToolTip("")
 
         self.l_source.setText(self.source_text(s, v, build))
 
-        st = s.stable
-        self.l_stable.setText(
-            f'<a href="{st.html_url}">{html.escape(st.tag)}</a> · {fmt_time(st.published_at)}' if st else "unknown"
-        )
+        st, cs = s.stable, s.vs_stable
+        if st:
+            short = core.short_version(st.tag) or st.tag
+            self.l_stable.setText(f'<a href="{html.escape(st.html_url)}">{html.escape(short)}</a>')
+            self.l_stable.setToolTip(self.build_tip(st.tag, f"Published {fmt_time(st.published_at)}"))
+        else:
+            self.l_stable.setText("Unknown")
+            self.l_stable.setToolTip("")
         if s.repo_package:
             pkg, ver = s.repo_package
             note = ""
             rd = core.repo_version_tag_date(ver)
             gd = core.repo_version_tag_date(st.tag) if st else None
             if rd and gd:
-                if rd > gd:
-                    note = " <b>(newer than GitHub stable)</b>"
-                elif rd < gd:
-                    note = " (older than GitHub stable)"
-                else:
-                    note = " (same as GitHub stable)"
-            self.l_repo.setText(f"{pkg} {html.escape(ver)}{note}")
+                note = " (newer than GitHub)" if rd > gd else " (older than GitHub)" if rd < gd else " (same as GitHub)"
+            self.l_repo.setText(html.escape(core.short_version(ver) or ver) + note)
+            self.l_repo.setToolTip(f"{pkg} {ver}")
         else:
-            self.l_repo.setText("proton-cachyos-slr not installed")
+            self.l_repo.setText("Not installed")
+            self.l_repo.setToolTip("proton-cachyos-slr isn't installed from the CachyOS repo")
 
-        # Worth updating?
-        ci, cs = s.vs_installed, s.vs_stable
-        self.render_worth(s)
+        self.render_update_status(s)
 
-        # Changelog tabs
-        if rel:
-            n = rel
-            # GitHub renders single newlines in release bodies as line breaks.
-            body = re.sub(r"(?<!\n)\n(?!\n)", "  \n", n.body.replace("\r\n", "\n").strip())
-            body = body or "_No release notes._"
-            self.t_notes.setMarkdown(f"# {n.name}\n\n{body}")
-        else:
-            self.t_notes.setMarkdown("_No nightly release or Snapshot artifacts found right now._")
-        self.t_inst.setHtml(self.commits_html(ci, "your installed build"))
-        self.t_stable.setHtml(self.commits_html(cs, f"stable ({st.tag if st else '?'})"))
-        self.tabs.setTabText(1, f"New since installed ({ci.ahead_by})" if ci and not ci.error_kind else "New since installed")
-        self.tabs.setTabText(2, f"Ahead of stable ({cs.ahead_by})" if cs and not cs.error_kind else "Ahead of stable")
+        ci = s.vs_installed
+        self.t_new.setHtml(self.whats_new_html(s, rel))
+        self.t_stable.setHtml(self.ahead_of_stable_html(cs, st))
+        self.tabs.setTabText(0, f"What's new ({ci.ahead_by})" if ci and not ci.error_kind and ci.ahead_by
+                             else "What's new")
+        self.tabs.setTabText(1, f"Ahead of stable ({cs.ahead_by})" if cs and not cs.error_kind else "Ahead of stable")
         self.update_buttons()
 
     def source_text(self, s: core.Status, v: str, build: core.Build | None) -> str:
         if build and build.source == core.SRC_RELEASE:
-            return "<b>Release</b>"
+            return "Nightly release"
         if build:
             if s.nightly is None:
                 why = "the nightly release doesn't exist right now"
             elif v not in core.release_variants(s.nightly):
-                why = "the nightly release doesn't publish this variant"
+                why = "the nightly release doesn't include this variant"
             else:
-                why = "the release assets kept 404ing"
-            return f"<b>Actions artifact</b> ({html.escape(build.origin)}), because {why}"
+                why = "the release download kept failing"
+            return f"Actions artifact ({html.escape(build.origin)}), because {why}"
         if not s.has_token and (s.nightly is None or s.rebuilding):
-            return ("<b>None</b>. The nightly release is missing or being rebuilt, and the Actions "
-                    "artifact fallback needs GitHub auth (<code>gh auth login</code>).")
+            return ("None. The nightly release is missing or being rebuilt, and the backup "
+                    "source needs GitHub sign-in (<code>gh auth login</code>).")
         if s.snapshot_error:
-            return f"<b>None</b>. Couldn't list Snapshot artifacts ({html.escape(s.snapshot_error)})."
-        return "<b>None</b>. Nightly is being rebuilt and no Snapshot artifact was found."
+            return f"None. Couldn't list Snapshot artifacts ({html.escape(s.snapshot_error)})."
+        return "None. The nightly is being rebuilt and no Snapshot artifact was found."
 
-    def render_worth(self, s: core.Status):
-        """Fill the two 'Worth updating?' lines. Only friendly text here:
-        error details are in the log file."""
+    def render_update_status(self, s: core.Status):
+        """Fill the 'Update status' column. Only friendly text here: error
+        details are in the log file."""
         inst = core.installed_build()
         ci = s.vs_installed
         retry = False
+        SP = QStyle.StandardPixmap
         if not inst:
-            t = "Not installed yet."
+            head, sub = (("Ready to install", "The latest nightly can be installed") if s.pick(self.cur_variant())
+                         else ("Nothing to install", "No nightly is available right now"))
+            self._set_icon("dialog-information", fallback=SP.SP_MessageBoxInformation)
         elif ci is None:
-            t = ("Installed build has no commit id to compare." if not core.commit_from_build(inst)
-                 else "Nightly commit unknown right now.")
+            head = "Unable to compare"
+            sub = ("The installed build has no commit ID" if not core.commit_from_build(inst)
+                   else "The latest nightly's commit is unavailable right now")
+            self._set_icon("dialog-information", fallback=SP.SP_MessageBoxInformation)
         elif ci.error_kind == "not_found":
-            t = "Your installed commit isn't on GitHub any more, so it can't be compared."
+            head, sub = "Unable to compare", "The installed build's commit is no longer on GitHub"
+            self._set_icon("dialog-warning", fallback=SP.SP_MessageBoxWarning)
         elif ci.error_kind:
-            t = f"Couldn't check how far behind you are ({html.escape(ci.error_text)})."
+            head, sub = "Unable to check", f"Update check failed ({html.escape(ci.error_text)})"
             retry = True
+            self._set_icon("dialog-warning", fallback=SP.SP_MessageBoxWarning)
         elif ci.ahead_by == 0:
-            t = "<b>Up to date</b>"
+            head, sub = "Up to date", "You have the latest nightly"
+            self._set_icon("checkmark", "emblem-ok-symbolic", "dialog-ok", fallback=SP.SP_DialogApplyButton)
         else:
             n = ci.ahead_by
-            t = (f'<b>Nightly is <a href="{ci.html_url}">{n} commit{"s" * (n != 1)}</a> '
-                 "ahead of your build.</b>")
-        self.l_worth_inst.setText(t)
+            head = "Update available"
+            sub = f'<a href="#whats-new">{n} new commit{"s" * (n != 1)}</a> since your build'
+            self._set_icon("update-medium", "software-update-available", "system-software-update",
+                           fallback=SP.SP_ArrowUp)
+        self.l_update.setText(head)
+        self.l_update_sub.setText(sub)
         self.b_retry_cmp.setVisible(retry)
 
-        cs = s.vs_stable
-        if cs is None:
-            st = ""
-        elif cs.error_kind:
-            st = f"Couldn't compare nightly with stable ({html.escape(cs.error_text)})."
+    def _changes_list(self, commits: list[tuple[str, str]]) -> str:
+        muted = self._muted_css()
+        out = []
+        for area, items in core.group_commits(commits):
+            out.append(f"<h4>{html.escape(area)}</h4><ul>")
+            for it in items:
+                count = f' <span style="color:{muted}">×{it.count}</span>' if it.count > 1 else ""
+                out.append(f"<li>{html.escape(it.text)}{count}</li>")
+            out.append("</ul>")
+        return "".join(out)
+
+    @staticmethod
+    def _links(*links: tuple[str | None, str]) -> str:
+        parts = [f'<a href="{html.escape(u)}">{html.escape(t)}</a>' for u, t in links if u]
+        return f"<p>{' · '.join(parts)}</p>" if parts else ""
+
+    def whats_new_html(self, s: core.Status, rel: core.Release | None) -> str:
+        """Readable list of what changed between the installed build and the
+        latest nightly, plus links to the full changelog."""
+        inst = core.installed_build()
+        ci = s.vs_installed
+        full = core.full_changelog_url(rel)
+        if full:
+            full_link = (full, "Full changelog on GitHub")
+        elif rel and rel.source == core.SRC_ARTIFACT:
+            full_link = (rel.html_url, "Workflow run on GitHub")
         else:
-            st = f'Nightly is <a href="{cs.html_url}">{cs.ahead_by} commits</a> ahead of stable'
-            if cs.behind_by:
-                st += f" (stable has {cs.behind_by} not in nightly)"
-            st += "."
-        self.l_worth_stable.setText(st)
-        self.l_worth_stable.setVisible(bool(st))
+            full_link = (rel.html_url if rel else None, "Release on GitHub")
+
+        if not inst:
+            intro = ("<p>Nothing installed yet. Once you install a nightly, this tab lists what each "
+                     "new nightly changes. <i>Ahead of stable</i> shows what the nightly adds over "
+                     "the stable release.</p>")
+            return intro + self._links(full_link)
+        if ci is None or ci.error_kind == "not_found":
+            return ("<p>The list of changes since your build isn't available.</p>"
+                    + self._links(full_link))
+        if ci.error_kind:
+            return (f"<p>Couldn't load the list of changes ({html.escape(ci.error_text)}).</p>"
+                    + self._links(full_link))
+        if not ci.ahead_by:
+            return "<p>You have the latest nightly. Nothing new since your build.</p>" + self._links(full_link)
+        n = ci.ahead_by
+        out = [f"<p><b>{n} change{'s' * (n != 1)}</b> since your build "
+               f"({html.escape(core.short_build_name(inst))}).</p>",
+               self._links((ci.html_url, "Compare on GitHub"), full_link),
+               self._changes_list(ci.commits)]
+        if len(ci.commits) < n:
+            out.append(f"<p><i>Showing the newest {len(ci.commits)}. The rest are on GitHub.</i></p>")
+        return "".join(out)
+
+    def ahead_of_stable_html(self, c: core.Compare | None, st: core.Release | None) -> str:
+        what = html.escape(core.short_version(st.tag) or st.tag) if st else "stable"
+        if c is None:
+            return "<p><i>No stable release to compare with.</i></p>"
+        if c.error_kind:
+            return f"<p><i>Couldn't load the list of changes ({html.escape(c.error_text)}).</i></p>"
+        if not c.ahead_by:
+            return f"<p>The nightly has nothing beyond stable {what}.</p>"
+        n = c.ahead_by
+        intro = f"<b>{n} change{'s' * (n != 1)}</b> in the nightly that stable {what} doesn't have."
+        if c.behind_by:
+            intro += f" Stable also has {c.behind_by} change{'s' * (c.behind_by != 1)} not in the nightly."
+        out = [f"<p>{intro}</p>", self._links((c.html_url, "Compare on GitHub")),
+               self._changes_list(c.commits)]
+        if len(c.commits) < n:
+            out.append(f"<p><i>Showing the newest {len(c.commits)}. The rest are on GitHub.</i></p>")
+        return "".join(out)
 
     def on_retry_compare(self):
         s = self.state
@@ -462,26 +619,6 @@ class MainWindow(QMainWindow):
         failed = c is not None and c.error_kind not in (None, "not_found")
         self.msg.setText("Check failed again; details are in the log." if failed
                          else f"Last checked {datetime.now():%H:%M:%S}")
-
-    def commits_html(self, c: core.Compare | None, what: str) -> str:
-        if c is None:
-            return f"<p><i>Nothing to compare against {html.escape(what)}.</i></p>"
-        if c.error_kind:
-            return f"<p><i>Couldn't load the commit list ({html.escape(c.error_text)}).</i></p>"
-        if not c.ahead_by:
-            return f"<p>Nightly has no commits beyond {html.escape(what)}.</p>"
-        out = [
-            f'<p><b>{c.ahead_by}</b> commit{"s" * (c.ahead_by != 1)} ahead of {html.escape(what)} '
-            f'— <a href="{c.html_url}">view on GitHub</a></p><ul>'
-        ]
-        for sha, title in c.commits:
-            out.append(
-                f'<li><a href="{COMMIT_URL}{sha}"><code>{sha}</code></a> {html.escape(title)}</li>'
-            )
-        out.append("</ul>")
-        if len(c.commits) < c.ahead_by:
-            out.append(f"<p><i>Showing the newest {len(c.commits)}.</i></p>")
-        return "".join(out)
 
     # ------------------------------------------------------------- actions
 
