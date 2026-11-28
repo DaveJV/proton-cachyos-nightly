@@ -6,9 +6,11 @@ A desktop app that installs and updates the nightly builds of
 game fixes and new features before they reach a stable release. This app
 installs them in one click and lets you go back if one breaks a game.
 
-<img src="docs/screenshot.png" width="540" alt="Proton-CachyOS Nightly window with the x86_64 build up to date">
-
-*Proton-CachyOS Nightly showing the installed build, update status, and changelog.*
+<p align="center">
+  <img src="docs/screenshot.png" width="540" alt="Proton-CachyOS Nightly window with the x86_64 build up to date">
+  <br>
+  <em>Proton-CachyOS Nightly showing the installed build, update status, and changelog.</em>
+</p>
 
 ## Features
 
