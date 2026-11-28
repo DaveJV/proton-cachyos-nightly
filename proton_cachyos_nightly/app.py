@@ -112,9 +112,6 @@ class MainWindow(QMainWindow):
             self._select(core.default_variant())
         self.variant.currentIndexChanged.connect(self.on_variant_changed)
         top.addWidget(self.variant)
-        self.cpu_hint = QLabel(f"(default: {core.default_variant()})")
-        self.cpu_hint.setEnabled(False)
-        top.addWidget(self.cpu_hint)
         top.addWidget(self.cpu_note)
         top.addStretch(1)
         root.addLayout(top)
@@ -410,7 +407,7 @@ class MainWindow(QMainWindow):
             return
         self._fill_variants(s.variants, core.release_variants(s.nightly))
         want = self.cfg.get("variant") or core.default_variant()
-        # A saved artifact-only choice is hidden without auth: show the CPU
+        # A saved artifact-only choice is hidden without auth: show the
         # default for now but keep the saved preference in the config.
         for target in (want, core.default_variant(), s.variants[0] if s.variants else ""):
             if self._select(target):

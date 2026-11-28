@@ -248,11 +248,8 @@ def experimental_note(variant: str) -> str | None:
 
 
 def default_variant(cpu: CpuInfo = CPU) -> str:
-    """x86_64_v3 (GCC) on x86-64-v3 CPUs, otherwise plain x86_64; arm64 on
-    non-x86 machines. Never a v4 or LLVM build."""
-    if not cpu.is_x86:
-        return "arm64"
-    return "x86_64_v3" if cpu.has_v3 else "x86_64"
+    """Use the baseline build for the machine architecture."""
+    return "x86_64" if cpu.is_x86 else "arm64"
 
 
 # --------------------------------------------------------------------------

@@ -20,7 +20,7 @@ from proton_cachyos_nightly import core  # noqa: E402
 NIGHTLY_SHA = "2ca6427f"
 OLD_SHA = "aaaaaaa1"
 STABLE_TAG = "cachyos-11.0-20261015-slr"
-VARIANT = "x86_64_v3"
+VARIANT = "x86_64"
 NIGHTLY_BUILD = f"proton-cachyos-11.0-20261125-base-240-g{NIGHTLY_SHA}-{VARIANT}"
 OLD_BUILD = f"proton-cachyos-11.0-20261120-base-200-g{OLD_SHA}-{VARIANT}"
 
@@ -156,6 +156,20 @@ class UpdateStatusUI(unittest.TestCase):
         w.state = status
         w.render()
         return w
+
+    def test_variant_picker_defaults_to_baseline_and_respects_saved_choice(self):
+        from PySide6.QtWidgets import QLabel
+
+        from proton_cachyos_nightly import app
+
+        self.assertTrue(core.CPU.has_v3)
+        for config, expected in (({}, "x86_64"), ({"variant": "x86_64_v3"}, "x86_64_v3")):
+            with self.subTest(config=config), mock.patch.object(core, "load_config", return_value=config), \
+                 mock.patch.object(app.MainWindow, "refresh"):
+                w = app.MainWindow()
+                self.addCleanup(w.deleteLater)
+                self.assertEqual(w.cur_variant(), expected)
+                self.assertFalse(any("(default:" in label.text() for label in w.findChildren(QLabel)))
 
     def test_friendly_message_and_stable_comparison_after_500(self):
         _install(OLD_BUILD)

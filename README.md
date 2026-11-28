@@ -6,12 +6,16 @@ A desktop app that installs and updates the nightly builds of
 game fixes and new features before they reach a stable release. This app
 installs them in one click and lets you go back if one breaks a game.
 
+![Proton-CachyOS Nightly window with the x86_64 build up to date](docs/screenshot.png)
+
+*Proton-CachyOS Nightly showing the installed build, update status, and changelog.*
+
 ## Features
 
 - Installs or updates to the latest nightly in one click.
 - Tells you when an update is available and lists what changed since your build.
 - Shows what the nightly adds over the current stable release.
-- Picks the right build for your CPU and hides builds your CPU can't run.
+- Defaults to the baseline build and hides builds your CPU can't run.
 - Rolls back to the previous build in one click.
 - Checks every download for corruption before installing it.
 - Keeps the same tool name across updates, so Steam and Faugus don't need to be set up again.
@@ -58,9 +62,9 @@ variant it doesn't publish (`x86_64_v4`, `x86_64-llvm`, `x86_64-wow64`,
 `snapshot.yml` workflow run on a `*/dev` branch instead. Downloading artifacts
 needs a GitHub token: `$GITHUB_TOKEN`, `$GH_TOKEN` or `gh auth token`.
 
-**Default variant.** Detected from `/proc/cpuinfo`: `x86_64_v3` if the CPU
-supports x86-64-v3, otherwise `x86_64`, and `arm64` on non-x86 machines.
-v4 builds are only offered when all the AVX-512 flags they need are present.
+**Default variant.** The app defaults to `x86_64` on x86-64 machines and
+`arm64` on non-x86 machines. It reads CPU flags from `/proc/cpuinfo` to
+determine which other builds to offer.
 
 **Install and rollback.** The app refuses to update while anything is running
 from the install folder. It verifies the SHA-512 checksum, extracts into a
